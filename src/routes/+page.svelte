@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import AddServiceModal from "$lib/AddServiceModal.svelte";
 
   type Service = {
@@ -14,9 +16,11 @@
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
   let showAdd = $state(false);
+  let unlisteners: UnlistenFn[] = [];
 
   async function refresh() {
     services = await invoke<Service[]>("list_services");
+    activeId = await invoke<string | null>("get_active_service");
   }
 
   async function onPick(svc: { name: string; url: string; icon: string | null; color?: string }) {
@@ -28,22 +32,17 @@
       color: svc.color ?? null,
     });
     await refresh();
-    await selectService(created.id);
+    await invoke("switch_service", { id: created.id });
   }
 
   async function selectService(id: string) {
-    activeId = id;
-    await invoke("set_active_service", { id });
+    await invoke("switch_service", { id });
   }
 
   async function removeService(id: string, e: Event) {
     e.stopPropagation();
     if (!confirm("¿Eliminar servicio?")) return;
     await invoke("remove_service", { id });
-    if (activeId === id) {
-      activeId = null;
-      await invoke("set_active_service", { id: null });
-    }
     await refresh();
   }
 
@@ -56,10 +55,28 @@
   const toggleMax = () => invoke("window_toggle_maximize");
   const closeWin = () => invoke("window_close");
 
-  onMount(refresh);
+  function dragOn(e: MouseEvent) {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (t.closest("button, .tab-close, [data-no-drag]")) return;
+    if (e.detail === 2) {
+      toggleMax();
+      return;
+    }
+    getCurrentWindow().startDragging().catch(console.error);
+  }
+
+  onMount(async () => {
+    await refresh();
+    unlisteners.push(await listen("kolibri:services_changed", refresh));
+    unlisteners.push(await listen("kolibri:active_changed", refresh));
+    unlisteners.push(await listen("kolibri:open_add_dialog", () => (showAdd = true)));
+  });
+
+  onDestroy(() => unlisteners.forEach((u) => u()));
 </script>
 
-<div class="bar" data-tauri-drag-region>
+<div class="bar" data-tauri-drag-region onmousedown={dragOn}>
   <button class="add" onclick={() => (showAdd = true)} title="Agregar servicio">＋</button>
 
   <div class="tabs" data-tauri-drag-region>
@@ -78,7 +95,7 @@
           tabindex="0"
           onclick={(e) => removeService(s.id, e)}
           onkeydown={(e) => e.key === "Enter" && removeService(s.id, e)}
-          aria-label="Eliminar servicio"
+          aria-label="Eliminar"
         >×</span>
       </button>
     {/each}
@@ -94,6 +111,17 @@
   </div>
 </div>
 
+<main class="welcome">
+  {#if services.length === 0}
+    <h1>Bienvenido a Kolibri</h1>
+    <p>Agrega tu primer servicio para empezar</p>
+    <button class="cta" onclick={() => (showAdd = true)}>+ Agregar servicio</button>
+  {:else}
+    <h1>Kolibri</h1>
+    <p>Selecciona un servicio en la barra de arriba</p>
+  {/if}
+</main>
+
 {#if showAdd}
   <AddServiceModal onclose={() => (showAdd = false)} onpick={onPick} />
 {/if}
@@ -105,7 +133,7 @@
     height: 100%;
     overflow: hidden;
     font-family: Inter, system-ui, sans-serif;
-    background: #1e1e1e;
+    background: #1a1a1a;
     color: #eee;
     user-select: none;
   }
@@ -116,9 +144,11 @@
     height: 44px;
     background: #222;
     border-bottom: 1px solid #2c2c2c;
-    padding: 0 4px;
+    padding: 0 6px;
     gap: 4px;
+    box-sizing: border-box;
   }
+  .bar * { box-sizing: border-box; }
 
   .add {
     background: #2c2c2c;
@@ -143,14 +173,13 @@
     height: 100%;
     align-items: center;
   }
-  .tabs::-webkit-scrollbar { height: 0; }
 
   .tab {
     display: flex;
     align-items: center;
     gap: 8px;
     height: 34px;
-    padding: 0 10px 0 4px;
+    padding: 0 8px 0 4px;
     background: #2a2a2a;
     border: 1px solid transparent;
     border-radius: 8px;
@@ -192,19 +221,9 @@
   }
   .tab-close:hover { background: #4a2222; color: #f88; }
 
-  .spacer {
-    flex: 1;
-    min-width: 12px;
-    height: 100%;
-  }
+  .spacer { flex: 1; min-width: 12px; height: 100%; }
 
-  .controls {
-    display: flex;
-    gap: 0;
-    flex-shrink: 0;
-    height: 100%;
-    align-items: center;
-  }
+  .controls { display: flex; height: 100%; align-items: center; flex-shrink: 0; }
   .ctrl {
     width: 38px;
     height: 100%;
@@ -217,4 +236,29 @@
   }
   .ctrl:hover { background: #333; color: #fff; }
   .ctrl.close:hover { background: #c00; color: #fff; }
+
+  .welcome {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    height: calc(100vh - 44px);
+    color: #aaa;
+    text-align: center;
+  }
+  .welcome h1 { margin: 0; font-weight: 500; color: #ddd; }
+  .welcome p { margin: 0; }
+  .cta {
+    margin-top: 8px;
+    padding: 12px 22px;
+    background: #4a8;
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .cta:hover { background: #5b9; }
 </style>

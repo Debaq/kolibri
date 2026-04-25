@@ -1,26 +1,70 @@
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
 use tauri::{
-    webview::WebviewBuilder, AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, State,
-    WebviewUrl,
+    webview::WebviewWindowBuilder, AppHandle, Emitter, Manager, Runtime, State, WebviewUrl,
+    WebviewWindow,
 };
 
 use crate::services::{data_dir_for, AppState, Service};
 
-pub const BAR_HEIGHT: u32 = 44;
-#[cfg(target_os = "windows")]
-const OFFSCREEN_X: f64 = -20000.0;
+const BAR_JS: &str = include_str!("bar.js");
 
-fn label_for(id: &str) -> String {
-    format!("svc__{}", id)
+pub fn label_for(id: &str) -> String {
+    format!("svc-{}", id)
 }
 
-pub fn ensure_mounted<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Result<()> {
-    let label = label_for(&svc.id);
-    if app.webviews().contains_key(&label) {
-        return Ok(());
+#[derive(Default)]
+pub struct GeometryState {
+    pub inner: Mutex<Geometry>,
+}
+
+#[derive(Default, Clone, Copy, Serialize, Deserialize)]
+pub struct Geometry {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub maximized: bool,
+}
+
+pub fn snapshot_geometry<R: Runtime>(window: &tauri::Window<R>) -> Option<Geometry> {
+    let pos = window.outer_position().ok()?;
+    let size = window.inner_size().ok()?;
+    let maximized = window.is_maximized().unwrap_or(false);
+    Some(Geometry {
+        x: pos.x,
+        y: pos.y,
+        width: size.width,
+        height: size.height,
+        maximized,
+    })
+}
+
+pub fn store_geometry<R: Runtime>(app: &AppHandle<R>, g: Geometry) {
+    if let Some(state) = app.try_state::<GeometryState>() {
+        *state.inner.lock().unwrap() = g;
     }
-    let Some(window) = app.get_window("main") else {
-        return Ok(());
-    };
+}
+
+pub fn apply_geometry_to<R: Runtime>(window: &WebviewWindow<R>, g: Geometry) {
+    if g.width > 0 && g.height > 0 {
+        let _ = window.set_size(tauri::PhysicalSize::new(g.width, g.height));
+        let _ = window.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+    }
+    if g.maximized {
+        let _ = window.maximize();
+    }
+}
+
+pub fn ensure_service_window<R: Runtime>(
+    app: &AppHandle<R>,
+    svc: &Service,
+) -> tauri::Result<WebviewWindow<R>> {
+    let label = label_for(&svc.id);
+    if let Some(w) = app.get_webview_window(&label) {
+        return Ok(w);
+    }
 
     let url = svc
         .url
@@ -28,181 +72,196 @@ pub fn ensure_mounted<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::R
         .map_err(|e: url::ParseError| tauri::Error::Anyhow(anyhow::anyhow!(e)))?;
     let data_dir = data_dir_for(app, &svc.id)?;
 
-    let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
-        .data_directory(data_dir);
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
+        .title(&svc.name)
+        .data_directory(data_dir)
+        .decorations(false)
+        .shadow(false)
+        .visible(false)
+        .skip_taskbar(true)
+        .min_inner_size(600.0, 400.0)
+        .inner_size(1200.0, 800.0)
+        .initialization_script(BAR_JS);
+
     if let Some(ua) = svc.user_agent.as_deref() {
         builder = builder.user_agent(ua);
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        let (pos, size) = win_service_bounds(app);
-        window.add_child(builder, pos, size)?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Linux: position is ignored by GtkBox layout. Use a placeholder.
-        window.add_child(
-            builder,
-            LogicalPosition::new(0.0, BAR_HEIGHT as f64),
-            LogicalSize::new(800.0, 600.0),
-        )?;
+    // Hereda geometría de la ventana visible actual si la hay.
+    let geom = app
+        .try_state::<GeometryState>()
+        .map(|s| *s.inner.lock().unwrap())
+        .unwrap_or_default();
+
+    let window = builder.build()?;
+
+    if geom.width > 0 && geom.height > 0 {
+        apply_geometry_to(&window, geom);
     }
 
-    Ok(())
-}
-
-pub fn unmount<R: Runtime>(app: &AppHandle<R>, id: &str) -> tauri::Result<()> {
-    let label = label_for(id);
-    if let Some(wv) = app.get_webview(&label) {
-        wv.close()?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn win_window_size<R: Runtime>(app: &AppHandle<R>) -> (f64, f64) {
-    app.get_window("main")
-        .and_then(|w| {
-            let inner = w.inner_size().ok()?;
-            let scale = w.scale_factor().unwrap_or(1.0);
-            Some((inner.width as f64 / scale, inner.height as f64 / scale))
-        })
-        .unwrap_or((1200.0, 800.0))
-}
-
-#[cfg(target_os = "windows")]
-fn win_service_bounds<R: Runtime>(app: &AppHandle<R>) -> (LogicalPosition<f64>, LogicalSize<f64>) {
-    let (w, h) = win_window_size(app);
-    (
-        LogicalPosition::new(0.0, BAR_HEIGHT as f64),
-        LogicalSize::new(w.max(100.0), (h - BAR_HEIGHT as f64).max(100.0)),
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn win_bar_bounds<R: Runtime>(app: &AppHandle<R>) -> (LogicalPosition<f64>, LogicalSize<f64>) {
-    let (w, _h) = win_window_size(app);
-    (
-        LogicalPosition::new(0.0, 0.0),
-        LogicalSize::new(w.max(100.0), BAR_HEIGHT as f64),
-    )
-}
-
-pub fn set_active<R: Runtime>(app: &AppHandle<R>, id: Option<&str>) -> tauri::Result<()> {
-    let state: State<AppState> = app.state();
-    let services = state.inner.lock().unwrap().services.clone();
-
-    #[cfg(target_os = "linux")]
-    {
-        linux_apply_layout(app, &services, id)?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let main = app.get_webview_window("main");
-        if let Some(main) = main {
-            let (pos, size) = win_bar_bounds(app);
-            let _ = main.set_position(pos);
-            let _ = main.set_size(size);
-        }
-        let (svc_pos, svc_size) = win_service_bounds(app);
-        for svc in services.iter() {
-            let label = label_for(&svc.id);
-            let Some(wv) = app.get_webview(&label) else {
-                continue;
-            };
-            let is_active = id == Some(svc.id.as_str());
-            if is_active {
-                let _ = wv.set_size(svc_size);
-                let _ = wv.set_position(svc_pos);
-            } else {
-                let _ = wv.set_position(LogicalPosition::new(OFFSCREEN_X, svc_pos.y));
+    let app_handle: AppHandle<R> = app.clone();
+    let label_owned = label.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
+            if let Some(w) = app_handle.get_webview_window(&label_owned) {
+                let inner = w.as_ref().window().clone();
+                if let Some(g) = snapshot_geometry(&inner) {
+                    store_geometry(&app_handle, g);
+                }
             }
         }
-    }
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            if let Some(w) = app_handle.get_webview_window(&label_owned) {
+                let _ = w.hide();
+            }
+        }
+        _ => {}
+    });
 
+    Ok(window)
+}
+
+pub fn destroy_service_window<R: Runtime>(app: &AppHandle<R>, id: &str) -> tauri::Result<()> {
+    let label = label_for(id);
+    if let Some(w) = app.get_webview_window(&label) {
+        // Permitir cierre real esta vez
+        w.destroy()?;
+    }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn linux_apply_layout<R: Runtime>(
+pub fn show_only<R: Runtime>(app: &AppHandle<R>, target: Option<&str>) -> tauri::Result<()> {
+    let services_state: State<AppState> = app.state();
+    let services = services_state.inner.lock().unwrap().services.clone();
+
+    // Capturar geometría actual antes de switch.
+    if let Some(visible) = current_visible_window(app, &services) {
+        let inner = visible.as_ref().window().clone();
+        if let Some(g) = snapshot_geometry(&inner) {
+            store_geometry(app, g);
+        }
+    }
+
+    let geom = app
+        .try_state::<GeometryState>()
+        .map(|s| *s.inner.lock().unwrap())
+        .unwrap_or_default();
+
+    // Mostrar primero target, luego ocultar resto (evita flicker).
+    let target_label = match target {
+        Some(id) => label_for(id),
+        None => "main".to_string(),
+    };
+
+    if let Some(w) = app.get_webview_window(&target_label) {
+        if geom.width > 0 && geom.height > 0 {
+            apply_geometry_to(&w, geom);
+        }
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+
+    // Ocultar todas las demás
+    if target_label != "main" {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
+    }
+    for svc in services.iter() {
+        let lbl = label_for(&svc.id);
+        if lbl == target_label {
+            continue;
+        }
+        if let Some(w) = app.get_webview_window(&lbl) {
+            let _ = w.hide();
+        }
+    }
+
+    let _ = app.emit("kolibri:active_changed", target);
+    Ok(())
+}
+
+fn current_visible_window<R: Runtime>(
     app: &AppHandle<R>,
     services: &[Service],
-    active: Option<&str>,
-) -> tauri::Result<()> {
-    use gtk::prelude::*;
-
-    let Some(window) = app.get_window("main") else {
-        return Ok(());
-    };
-    let vbox = window.default_vbox()?;
-
-    // Children are in insertion order: index 0 = main bar webview, 1.. = services.
-    let children = vbox.children();
-    if let Some(first) = children.first() {
-        // Pin bar to natural height, no expand/fill — services take the rest.
-        vbox.set_child_packing(first, false, false, 0, gtk::PackType::Start);
-        first.set_size_request(-1, BAR_HEIGHT as i32);
-    }
-
-    // Show only the active service widget; hide all others.
-    for svc in services.iter() {
-        let label = label_for(&svc.id);
-        let Some(wv) = app.get_webview(&label) else {
-            continue;
-        };
-        let is_active = active == Some(svc.id.as_str());
-        let _ = wv.with_webview(move |platform_wv| {
-            let widget = platform_wv.inner();
-            if is_active {
-                widget.show();
-            } else {
-                widget.hide();
-            }
-        });
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn update_content_bounds<R: Runtime>(
-    app: AppHandle<R>,
-    _x: f64,
-    _y: f64,
-    _width: f64,
-    _height: f64,
-) -> Result<(), String> {
-    let app_state: State<AppState> = app.state();
-    let active = app_state.inner.lock().unwrap().active_id.clone();
-    set_active(&app, active.as_deref()).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn window_minimize<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(w) = app.get_window("main") {
-        w.minimize().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn window_toggle_maximize<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(w) = app.get_window("main") {
-        if w.is_maximized().unwrap_or(false) {
-            w.unmaximize().map_err(|e| e.to_string())?;
-        } else {
-            w.maximize().map_err(|e| e.to_string())?;
+) -> Option<WebviewWindow<R>> {
+    if let Some(w) = app.get_webview_window("main") {
+        if w.is_visible().unwrap_or(false) {
+            return Some(w);
         }
     }
+    for svc in services {
+        if let Some(w) = app.get_webview_window(&label_for(&svc.id)) {
+            if w.is_visible().unwrap_or(false) {
+                return Some(w);
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn switch_service<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> Result<(), String> {
+    {
+        let state: State<AppState> = app.state();
+        let mut g = state.inner.lock().unwrap();
+        g.active_id = id.clone();
+        crate::services::save(&app, &g).map_err(|e| e.to_string())?;
+    }
+    show_only(&app, id.as_deref()).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
-pub fn window_close<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if let Some(w) = app.get_window("main") {
-        w.hide().map_err(|e| e.to_string())?;
+pub fn get_active_service(state: State<'_, AppState>) -> Option<String> {
+    state.inner.lock().unwrap().active_id.clone()
+}
+
+#[tauri::command]
+pub fn open_add_dialog<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    show_only(&app, None).map_err(|e| e.to_string())?;
+    let _ = app.emit("kolibri:open_add_dialog", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_settings<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    show_only(&app, None).map_err(|e| e.to_string())?;
+    let _ = app.emit("kolibri:open_settings", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn window_minimize<R: Runtime>(window: tauri::Window<R>) -> Result<(), String> {
+    eprintln!("[KOLIBRI] window_minimize from label={}", window.label());
+    window.minimize().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn window_toggle_maximize<R: Runtime>(window: tauri::Window<R>) -> Result<(), String> {
+    let max = window.is_maximized().unwrap_or(false);
+    eprintln!(
+        "[KOLIBRI] window_toggle_maximize from label={} (currently maximized={})",
+        window.label(),
+        max
+    );
+    if max {
+        window.unmaximize().map_err(|e| e.to_string())?;
+    } else {
+        window.maximize().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn window_close<R: Runtime>(app: AppHandle<R>, window: tauri::Window<R>) -> Result<(), String> {
+    eprintln!("[KOLIBRI] window_close from label={}", window.label());
+    if window.label() != "main" {
+        window.hide().map_err(|e| e.to_string())?;
+        show_only(&app, None).map_err(|e| e.to_string())?;
+    } else {
+        window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
 }

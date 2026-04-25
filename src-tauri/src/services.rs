@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::webview;
 
@@ -17,9 +17,10 @@ pub struct Service {
     pub user_agent: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct PersistedState {
     pub services: Vec<Service>,
+    #[serde(default)]
     pub sidebar_collapsed: bool,
     pub active_id: Option<String>,
 }
@@ -63,24 +64,12 @@ pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         let mut guard = state.inner.lock().unwrap();
         *guard = parsed;
     }
-    let snapshot = state.inner.lock().unwrap().clone_for_mount();
+    let snapshot = state.inner.lock().unwrap().clone();
     for svc in snapshot.services.iter() {
-        let _ = webview::ensure_mounted(app, svc);
+        let _ = webview::ensure_service_window(app, svc);
     }
-    if let Some(active) = snapshot.active_id.as_deref() {
-        let _ = webview::set_active(app, Some(active));
-    }
+    let _ = webview::show_only(app, snapshot.active_id.as_deref());
     Ok(())
-}
-
-impl PersistedState {
-    pub fn clone_for_mount(&self) -> Self {
-        PersistedState {
-            services: self.services.clone(),
-            sidebar_collapsed: self.sidebar_collapsed,
-            active_id: self.active_id.clone(),
-        }
-    }
 }
 
 #[tauri::command]
@@ -98,7 +87,7 @@ pub fn add_service<R: Runtime>(
     color: Option<String>,
 ) -> Result<Service, String> {
     let id = format!(
-        "svc_{}",
+        "{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -117,7 +106,8 @@ pub fn add_service<R: Runtime>(
         g.services.push(svc.clone());
         save(&app, &g).map_err(|e| e.to_string())?;
     }
-    webview::ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
+    webview::ensure_service_window(&app, &svc).map_err(|e| e.to_string())?;
+    let _ = app.emit("kolibri:services_changed", ());
     Ok(svc)
 }
 
@@ -127,31 +117,30 @@ pub fn remove_service<R: Runtime>(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    let was_active;
     {
         let mut g = state.inner.lock().unwrap();
         g.services.retain(|s| s.id != id);
-        if g.active_id.as_deref() == Some(&id) {
+        was_active = g.active_id.as_deref() == Some(&id);
+        if was_active {
             g.active_id = None;
         }
         save(&app, &g).map_err(|e| e.to_string())?;
     }
-    webview::unmount(&app, &id).map_err(|e| e.to_string())?;
+    webview::destroy_service_window(&app, &id).map_err(|e| e.to_string())?;
+    if was_active {
+        webview::show_only(&app, None).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("kolibri:services_changed", ());
     Ok(())
 }
 
 #[tauri::command]
 pub fn set_active_service<R: Runtime>(
     app: AppHandle<R>,
-    state: State<'_, AppState>,
     id: Option<String>,
 ) -> Result<(), String> {
-    {
-        let mut g = state.inner.lock().unwrap();
-        g.active_id = id.clone();
-        save(&app, &g).map_err(|e| e.to_string())?;
-    }
-    webview::set_active(&app, id.as_deref()).map_err(|e| e.to_string())?;
-    Ok(())
+    webview::switch_service(app, id)
 }
 
 #[tauri::command]
@@ -160,12 +149,8 @@ pub fn set_sidebar_collapsed<R: Runtime>(
     state: State<'_, AppState>,
     collapsed: bool,
 ) -> Result<(), String> {
-    let active = {
-        let mut g = state.inner.lock().unwrap();
-        g.sidebar_collapsed = collapsed;
-        save(&app, &g).map_err(|e| e.to_string())?;
-        g.active_id.clone()
-    };
-    webview::set_active(&app, active.as_deref()).map_err(|e| e.to_string())?;
+    let mut g = state.inner.lock().unwrap();
+    g.sidebar_collapsed = collapsed;
+    save(&app, &g).map_err(|e| e.to_string())?;
     Ok(())
 }
