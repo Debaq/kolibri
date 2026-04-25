@@ -3,7 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import AddServiceModal from "$lib/AddServiceModal.svelte";
+  import { CATALOG, type ServiceTemplate } from "$lib/catalog";
 
   type Service = {
     id: string;
@@ -13,9 +13,13 @@
     color: string | null;
   };
 
+  type Mode = "tabs" | "picker" | "custom";
+
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
-  let showAdd = $state(false);
+  let mode = $state<Mode>("tabs");
+  let customName = $state("");
+  let customUrl = $state("");
   let unlisteners: UnlistenFn[] = [];
 
   async function refresh() {
@@ -23,14 +27,33 @@
     activeId = await invoke<string | null>("get_active_service");
   }
 
-  async function onPick(svc: { name: string; url: string; icon: string | null; color?: string }) {
-    showAdd = false;
+  async function addFromTemplate(t: ServiceTemplate) {
     const created = await invoke<Service>("add_service", {
-      name: svc.name,
-      url: svc.url,
-      icon: svc.icon,
-      color: svc.color ?? null,
+      name: t.name,
+      url: t.url,
+      icon: t.initial,
+      color: t.color,
     });
+    mode = "tabs";
+    await refresh();
+    await invoke("switch_service", { id: created.id });
+    activeId = created.id;
+  }
+
+  async function addCustom(e: Event) {
+    e.preventDefault();
+    if (!customName.trim() || !customUrl.trim()) return;
+    let url = customUrl.trim();
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    const created = await invoke<Service>("add_service", {
+      name: customName.trim(),
+      url,
+      icon: null,
+      color: null,
+    });
+    customName = "";
+    customUrl = "";
+    mode = "tabs";
     await refresh();
     await invoke("switch_service", { id: created.id });
     activeId = created.id;
@@ -65,12 +88,21 @@
   function dragOn(e: MouseEvent) {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
-    if (t.closest("button, .tab-close, [data-no-drag]")) return;
+    if (t.closest("button, input, .tab-close, [data-no-drag]")) return;
     if (e.detail === 2) {
       toggleMax();
       return;
     }
     getCurrentWindow().startDragging().catch(console.error);
+  }
+
+  function startPicker() {
+    mode = "picker";
+  }
+  function cancelPicker() {
+    mode = "tabs";
+    customName = "";
+    customUrl = "";
   }
 
   onMount(async () => {
@@ -83,29 +115,68 @@
 </script>
 
 <div class="bar" data-tauri-drag-region onmousedown={dragOn}>
-  <button class="add" onclick={() => (showAdd = true)} title="Agregar servicio">＋</button>
+  {#if mode === "tabs"}
+    <button class="add" onclick={startPicker} title="Agregar servicio">＋</button>
 
-  <div class="tabs" data-tauri-drag-region>
-    {#each services as s (s.id)}
-      <button
-        class="tab"
-        class:active={s.id === activeId}
-        onclick={() => selectService(s.id)}
-        title={s.name}
-      >
-        <span class="tab-icon" style:background={s.color ?? "#444"}>{initialOf(s)}</span>
-        <span class="tab-name">{s.name}</span>
-        <span
-          class="tab-close"
-          role="button"
-          tabindex="0"
-          onclick={(e) => removeService(s.id, e)}
-          onkeydown={(e) => e.key === "Enter" && removeService(s.id, e)}
-          aria-label="Eliminar"
-        >×</span>
+    <div class="tabs" data-tauri-drag-region>
+      {#each services as s (s.id)}
+        <button
+          class="tab"
+          class:active={s.id === activeId}
+          onclick={() => selectService(s.id)}
+          title={s.name}
+        >
+          <span class="tab-icon" style:background={s.color ?? "#444"}>{initialOf(s)}</span>
+          <span class="tab-name">{s.name}</span>
+          <span
+            class="tab-close"
+            role="button"
+            tabindex="0"
+            onclick={(e) => removeService(s.id, e)}
+            onkeydown={(e) => e.key === "Enter" && removeService(s.id, e)}
+            aria-label="Eliminar"
+          >×</span>
+        </button>
+      {/each}
+    </div>
+  {:else if mode === "picker"}
+    <button class="add cancel" onclick={cancelPicker} title="Cancelar">×</button>
+    <div class="picker">
+      {#each CATALOG as t (t.key)}
+        <button
+          class="pick"
+          onclick={() => addFromTemplate(t)}
+          title="{t.name} — {t.description}"
+        >
+          <span class="pick-icon" style:background={t.color}>{t.initial}</span>
+          <span class="pick-name">{t.name}</span>
+        </button>
+      {/each}
+      <button class="pick custom-btn" onclick={() => (mode = "custom")} title="URL personalizada">
+        <span class="pick-icon" style:background="#555">…</span>
+        <span class="pick-name">Otra</span>
       </button>
-    {/each}
-  </div>
+    </div>
+  {:else if mode === "custom"}
+    <button class="add cancel" onclick={cancelPicker} title="Cancelar">×</button>
+    <form class="custom-form" onsubmit={addCustom}>
+      <input
+        type="text"
+        placeholder="Nombre"
+        bind:value={customName}
+        data-no-drag
+        required
+      />
+      <input
+        type="text"
+        placeholder="https://ejemplo.com"
+        bind:value={customUrl}
+        data-no-drag
+        required
+      />
+      <button type="submit" class="custom-go">Agregar</button>
+    </form>
+  {/if}
 
   <div class="spacer" data-tauri-drag-region></div>
 
@@ -121,17 +192,12 @@
 <main class="welcome">
   {#if services.length === 0}
     <h1>Bienvenido a Kolibri</h1>
-    <p>Agrega tu primer servicio para empezar</p>
-    <button class="cta" onclick={() => (showAdd = true)}>+ Agregar servicio</button>
+    <p>Click ＋ arriba para agregar tu primer servicio</p>
   {:else if !activeId}
     <h1>Kolibri</h1>
     <p>Selecciona un servicio en la barra de arriba</p>
   {/if}
 </main>
-
-{#if showAdd}
-  <AddServiceModal onclose={() => (showAdd = false)} onpick={onPick} />
-{/if}
 
 <style>
   :global(html, body) {
@@ -148,7 +214,7 @@
   .bar {
     display: flex;
     align-items: center;
-    height: 44px;
+    height: 56px;
     background: #222;
     border-bottom: 1px solid #2c2c2c;
     padding: 0 6px;
@@ -170,6 +236,8 @@
     line-height: 1;
   }
   .add:hover { background: #383838; color: #fff; }
+  .add.cancel { background: #4a2222; color: #f88; border-color: #6a3a3a; }
+  .add.cancel:hover { background: #6a2828; }
 
   .tabs {
     display: flex;
@@ -202,7 +270,7 @@
     border-color: #4a4a4a;
     color: #fff;
   }
-  .tab-icon {
+  .tab-icon, .pick-icon {
     width: 26px;
     height: 26px;
     border-radius: 6px;
@@ -213,10 +281,11 @@
     font-size: 12px;
     flex-shrink: 0;
   }
-  .tab-name {
+  .tab-name, .pick-name {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    font-size: 11px;
   }
   .tab-close {
     color: #777;
@@ -227,6 +296,66 @@
     cursor: pointer;
   }
   .tab-close:hover { background: #4a2222; color: #f88; }
+
+  .picker {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    align-items: center;
+    padding: 0 4px;
+  }
+  .pick {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    padding: 0 8px 0 4px;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 8px;
+    color: #ddd;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .pick:hover { background: #383838; border-color: #555; transform: translateY(-1px); }
+  .pick:active { transform: translateY(0); }
+
+  .custom-form {
+    display: flex;
+    gap: 6px;
+    flex: 1;
+    align-items: center;
+    height: 100%;
+    padding: 0 4px;
+  }
+  .custom-form input {
+    background: #1d1d1d;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 0 10px;
+    height: 30px;
+    color: #eee;
+    font-size: 12px;
+    outline: none;
+  }
+  .custom-form input:focus { border-color: #6a8; }
+  .custom-form input:first-of-type { width: 140px; }
+  .custom-form input:nth-of-type(2) { flex: 1; min-width: 200px; }
+  .custom-go {
+    height: 30px;
+    padding: 0 14px;
+    background: #4a8;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .custom-go:hover { background: #5b9; }
 
   .spacer { flex: 1; min-width: 12px; height: 100%; }
 
@@ -250,22 +379,10 @@
     align-items: center;
     justify-content: center;
     gap: 16px;
-    height: calc(100vh - 44px);
+    height: calc(100vh - 56px);
     color: #aaa;
     text-align: center;
   }
   .welcome h1 { margin: 0; font-weight: 500; color: #ddd; }
   .welcome p { margin: 0; }
-  .cta {
-    margin-top: 8px;
-    padding: 12px 22px;
-    background: #4a8;
-    border: none;
-    border-radius: 8px;
-    color: white;
-    font-weight: 600;
-    cursor: pointer;
-    font-size: 14px;
-  }
-  .cta:hover { background: #5b9; }
 </style>

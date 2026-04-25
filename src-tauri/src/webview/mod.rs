@@ -4,7 +4,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use crate::services::{AppState, Service};
 
-pub const BAR_HEIGHT: u32 = 44;
+pub const BAR_HEIGHT: u32 = 56;
 
 pub fn label_for(id: &str) -> String {
     format!("svc__{}", id)

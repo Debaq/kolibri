@@ -12,13 +12,41 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let Some(window) = app.get_window("main") else {
         return Ok(());
     };
+
+    // CSS provider global: pinta cualquier área no cubierta por webview en negro.
+    // Evita que el bg blanco del tema GTK se vea como "borde" en la ventana.
+    let css = "window, box, .background { background-color: #1a1a1a; border: none; box-shadow: none; }";
+    let provider = gtk::CssProvider::new();
+    if provider.load_from_data(css.as_bytes()).is_ok() {
+        if let Some(screen) = gtk::gdk::Screen::default() {
+            gtk::StyleContext::add_provider_for_screen(
+                &screen,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+    }
+
     let vbox = window.default_vbox()?;
     // El primer child del vbox es el webview principal (Svelte). Lo fijamos a altura BAR_HEIGHT.
     let children = vbox.children();
     if let Some(first) = children.first() {
-        vbox.set_child_packing(first, false, false, 0, gtk::PackType::Start);
+        vbox.set_child_packing(first, false, true, 0, gtk::PackType::Start);
         first.set_size_request(-1, BAR_HEIGHT as i32);
+        first.set_hexpand(true);
+        first.set_halign(gtk::Align::Fill);
+        first.set_valign(gtk::Align::Start);
+        first.set_margin_top(0);
+        first.set_margin_bottom(0);
+        first.set_margin_start(0);
+        first.set_margin_end(0);
     }
+    // Quitar márgenes/padding del propio vbox por si el theme GTK del usuario los pone.
+    vbox.set_margin_top(0);
+    vbox.set_margin_bottom(0);
+    vbox.set_margin_start(0);
+    vbox.set_margin_end(0);
+    vbox.set_spacing(0);
     Ok(())
 }
 
