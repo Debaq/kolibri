@@ -4,7 +4,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { CATALOG, type ServiceTemplate } from "$lib/catalog";
-  import SettingsPanel from "$lib/SettingsPanel.svelte";
+  import { isEnabled as autostartIsEnabled, enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
 
   type Theme = "dark" | "light";
 
@@ -16,7 +16,7 @@
     color: string | null;
   };
 
-  type Mode = "tabs" | "picker" | "custom" | "remove";
+  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts";
 
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
@@ -26,8 +26,17 @@
   let pendingRemoveId = $state<string | null>(null);
   let dragId = $state<string | null>(null);
   let dragOverId = $state<string | null>(null);
-  let showSettings = $state(false);
+  let editingId = $state<string | null>(null);
+  let editName = $state("");
+  let editUrl = $state("");
+  let editColor = $state("");
+  let editIcon = $state("");
   let loadingIds = $state<Set<string>>(new Set());
+  let unread = $state<Record<string, number>>({});
+  let autostartOn = $state(false);
+  let toggleShortcut = $state("Ctrl+Alt+K");
+  let shortcutDraft = $state("");
+  let shortcutMsg = $state("");
 
   function setLoading(id: string, loading: boolean) {
     const next = new Set(loadingIds);
@@ -208,6 +217,48 @@
     pendingRemoveId = null;
   }
 
+  function openSettings() {
+    mode = "settings";
+  }
+
+  function startEdit(s: Service) {
+    editingId = s.id;
+    editName = s.name;
+    editUrl = s.url;
+    editColor = s.color ?? "";
+    editIcon = s.icon ?? "";
+    mode = "edit";
+  }
+
+  async function saveEdit() {
+    if (!editingId) return;
+    await invoke("update_service", {
+      id: editingId,
+      name: editName.trim(),
+      url: editUrl.trim(),
+      icon: editIcon,
+      color: editColor,
+    });
+    editingId = null;
+    mode = "settings";
+    await refresh();
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    mode = "settings";
+  }
+
+  async function moveService(id: string, delta: number) {
+    const ids = services.map((s) => s.id);
+    const i = ids.indexOf(id);
+    const j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await invoke("reorder_services", { ids });
+    await refresh();
+  }
+
   function onKey(e: KeyboardEvent) {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
     const k = e.key.toLowerCase();
@@ -232,9 +283,68 @@
     }
   }
 
+  async function toggleAutostart() {
+    if (autostartOn) {
+      await autostartDisable();
+      autostartOn = false;
+    } else {
+      await autostartEnable();
+      autostartOn = true;
+    }
+  }
+
+  async function loadShortcut() {
+    toggleShortcut = await invoke<string>("get_toggle_shortcut");
+    shortcutDraft = toggleShortcut;
+  }
+
+  async function saveShortcut() {
+    const acc = shortcutDraft.trim();
+    if (!acc) return;
+    try {
+      await invoke("set_toggle_shortcut", { accelerator: acc });
+      toggleShortcut = acc;
+      shortcutMsg = "OK";
+    } catch (e) {
+      shortcutMsg = "Error: " + e;
+    }
+    setTimeout(() => (shortcutMsg = ""), 2000);
+  }
+
+  function captureShortcut(e: KeyboardEvent) {
+    if (e.key === "Tab" || e.key === "Escape") return;
+    e.preventDefault();
+    const parts: string[] = [];
+    if (e.ctrlKey) parts.push("Ctrl");
+    if (e.altKey) parts.push("Alt");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.metaKey) parts.push("Super");
+    const k = e.key;
+    if (!["Control", "Alt", "Shift", "Meta"].includes(k)) {
+      parts.push(k.length === 1 ? k.toUpperCase() : k);
+    }
+    if (parts.length > 0) shortcutDraft = parts.join("+");
+  }
+
+  function startResize(dir: string) {
+    return (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      // @ts-ignore - tauri ResizeDirection enum
+      getCurrentWindow().startResizeDragging(dir).catch(console.error);
+    };
+  }
+
   onMount(async () => {
     applyTheme(theme);
     await refresh();
+    try {
+      autostartOn = await autostartIsEnabled();
+    } catch {}
+    try {
+      await loadShortcut();
+    } catch {}
     unlisteners.push(await listen("kolibri:services_changed", refresh));
     unlisteners.push(await listen("kolibri:active_changed", refresh));
     unlisteners.push(
@@ -242,6 +352,18 @@
         const [sid, phase] = e.payload;
         setLoading(sid, phase === "started");
       })
+    );
+    unlisteners.push(
+      await listen<{ service_id: string; count: number; total: number }>(
+        "kolibri:unread",
+        (e) => {
+          const { service_id, count } = e.payload;
+          const next = { ...unread };
+          if (count > 0) next[service_id] = count;
+          else delete next[service_id];
+          unread = next;
+        }
+      )
     );
     window.addEventListener("keydown", onKey);
   });
@@ -251,6 +373,12 @@
     window.removeEventListener("keydown", onKey);
   });
 </script>
+
+<div class="rz rz-s" onmousedown={startResize("South")}></div>
+<div class="rz rz-e" onmousedown={startResize("East")}></div>
+<div class="rz rz-w" onmousedown={startResize("West")}></div>
+<div class="rz rz-se" onmousedown={startResize("SouthEast")}></div>
+<div class="rz rz-sw" onmousedown={startResize("SouthWest")}></div>
 
 <div class="bar" data-tauri-drag-region onmousedown={dragOn}>
   {#if mode === "tabs"}
@@ -284,6 +412,9 @@
             {/if}
           </span>
           <span class="tab-name">{s.name}</span>
+          {#if unread[s.id]}
+            <span class="badge">{unread[s.id] > 99 ? "99+" : unread[s.id]}</span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -377,6 +508,71 @@
       />
       <button type="submit" class="custom-go">Agregar</button>
     </form>
+  {:else if mode === "settings"}
+    <button class="add cancel" onclick={() => (mode = "tabs")} title="Cerrar">×</button>
+    <div class="picker">
+      <span class="seg-label">Tema</span>
+      <button class="seg" class:on={theme === "dark"} onclick={() => applyTheme("dark")}>Oscuro</button>
+      <button class="seg" class:on={theme === "light"} onclick={() => applyTheme("light")}>Claro</button>
+      <span class="sep"></span>
+      <span class="seg-label">Servicios</span>
+      {#each services as s, i (s.id)}
+        {@const fav = faviconUrl(s.url)}
+        {@const useFav = fav && !faviconFailed.has("svc:" + s.id)}
+        <div class="svc-group">
+          <button class="ord-btn" onclick={() => moveService(s.id, -1)} disabled={i === 0} title="Subir">▲</button>
+          <button class="pick" onclick={() => startEdit(s)} title="Editar {s.name}">
+            <span class="pick-icon" class:img={useFav} style:background={useFav ? "transparent" : (s.color ?? "#444")}>
+              {#if useFav}
+                <img src={fav} alt="" onerror={() => markFaviconFailed("svc:" + s.id)} />
+              {:else}
+                {initialOf(s)}
+              {/if}
+            </span>
+            <span class="pick-name">{s.name}</span>
+          </button>
+          <button class="ord-btn" onclick={() => moveService(s.id, 1)} disabled={i === services.length - 1} title="Bajar">▼</button>
+        </div>
+      {/each}
+      <span class="sep"></span>
+      <span class="seg-label">Sistema</span>
+      <button class="seg" class:on={autostartOn} onclick={toggleAutostart} title="Iniciar con sesión">
+        Autostart {autostartOn ? "ON" : "OFF"}
+      </button>
+      <span class="sep"></span>
+      <span class="seg-label">Atajo global</span>
+      <input
+        type="text"
+        class="kbd-input"
+        bind:value={shortcutDraft}
+        onkeydown={captureShortcut}
+        data-no-drag
+        placeholder="Ctrl+Alt+K"
+        title="Click y presioná la combinación"
+      />
+      <button class="seg" onclick={saveShortcut}>Guardar</button>
+      {#if shortcutMsg}<span class="kbd-item">{shortcutMsg}</span>{/if}
+      <span class="sep"></span>
+      <button class="seg" onclick={() => (mode = "shortcuts")}>Atajos bar</button>
+    </div>
+  {:else if mode === "edit"}
+    <button class="add cancel" onclick={cancelEdit} title="Cancelar">×</button>
+    <form class="custom-form" onsubmit={(e) => { e.preventDefault(); saveEdit(); }}>
+      <input type="text" placeholder="Nombre" bind:value={editName} data-no-drag required />
+      <input type="text" placeholder="URL" bind:value={editUrl} data-no-drag required />
+      <input type="text" placeholder="Inicial/emoji" bind:value={editIcon} data-no-drag class="icon-input" maxlength="2" title="Icono custom (1-2 chars/emoji)" />
+      <input type="color" bind:value={editColor} data-no-drag class="color-input" title="Color" />
+      <button type="button" class="link-btn" onclick={() => (editColor = "")}>limpiar</button>
+      <button type="submit" class="custom-go">Guardar</button>
+    </form>
+  {:else if mode === "shortcuts"}
+    <button class="add cancel" onclick={() => (mode = "settings")} title="Volver">×</button>
+    <div class="picker shortcuts-row">
+      <span class="kbd-item"><kbd>Ctrl</kbd>+<kbd>1</kbd>..<kbd>9</kbd> tab N</span>
+      <span class="kbd-item"><kbd>Ctrl</kbd>+<kbd>T</kbd> agregar</span>
+      <span class="kbd-item"><kbd>Ctrl</kbd>+<kbd>W</kbd> eliminar actual</span>
+      <span class="kbd-item"><kbd>Ctrl</kbd>+<kbd>0</kbd>/<kbd>H</kbd> inicio</span>
+    </div>
   {/if}
 
   <div class="spacer" data-tauri-drag-region></div>
@@ -386,7 +582,7 @@
     {#if activeId}
       <button class="ctrl" onclick={reloadActive} title="Recargar">↻</button>
     {/if}
-    <button class="ctrl" onclick={() => (showSettings = true)} title="Configuración">⚙</button>
+    <button class="ctrl" onclick={openSettings} title="Configuración">⚙</button>
     {#if services.length > 0}
       <button class="ctrl ctrl-remove" onclick={startRemove} title="Eliminar servicio">🗑</button>
     {/if}
@@ -396,21 +592,13 @@
   </div>
 </div>
 
-{#if showSettings}
-  <SettingsPanel
-    {services}
-    {theme}
-    onClose={() => (showSettings = false)}
-    onChanged={refresh}
-    onTheme={applyTheme}
-  />
-{/if}
-
 <main class="welcome">
   {#if services.length === 0}
+    <img class="logo" src="/logo.png" alt="Kolibri" draggable="false" />
     <h1>Bienvenido a Kolibri</h1>
     <p>Click ＋ arriba para agregar tu primer servicio</p>
   {:else if !activeId}
+    <img class="logo" src="/logo.png" alt="Kolibri" draggable="false" />
     <h1>Kolibri</h1>
     <p>Selecciona un servicio en la barra de arriba</p>
   {/if}
@@ -635,6 +823,83 @@
   .ctrl:hover { background: #333; color: #fff; }
   .ctrl.close:hover { background: #c00; color: #fff; }
 
+  .seg-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #888;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
+  .seg {
+    height: 30px;
+    padding: 0 12px;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    color: #ddd;
+    cursor: pointer;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .seg:hover { background: #383838; }
+  .seg.on { background: #4a8; border-color: #5b9; color: #fff; }
+  .sep {
+    width: 1px;
+    height: 22px;
+    background: #3a3a3a;
+    flex-shrink: 0;
+    margin: 0 4px;
+  }
+  .svc-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+  .ord-btn {
+    background: transparent;
+    border: 1px solid #3a3a3a;
+    color: #aaa;
+    width: 20px;
+    height: 30px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 9px;
+    padding: 0;
+  }
+  .ord-btn:disabled { opacity: 0.3; cursor: default; }
+  .ord-btn:not(:disabled):hover { background: #333; color: #fff; }
+  .color-input {
+    width: 32px;
+    height: 30px;
+    background: transparent;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+  }
+  .link-btn {
+    background: transparent;
+    border: none;
+    color: #6ab;
+    cursor: pointer;
+    font-size: 11px;
+    padding: 0 4px;
+  }
+  .link-btn:hover { color: #8cd; text-decoration: underline; }
+  .shortcuts-row { gap: 14px; }
+  .kbd-item { font-size: 11px; color: #bbb; flex-shrink: 0; white-space: nowrap; }
+  kbd {
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: monospace;
+    font-size: 10px;
+    color: #ddd;
+  }
+
   .welcome {
     display: flex;
     flex-direction: column;
@@ -647,4 +912,51 @@
   }
   .welcome h1 { margin: 0; font-weight: 500; color: #ddd; }
   .welcome p { margin: 0; }
+  .welcome .logo {
+    width: min(40vw, 320px);
+    height: auto;
+    object-fit: contain;
+    -webkit-user-drag: none;
+    user-select: none;
+    filter: drop-shadow(0 8px 24px rgba(0,0,0,0.4));
+  }
+
+  .rz { position: fixed; z-index: 9999; background: transparent; }
+  .rz-s  { bottom: 0; left: 8px; right: 8px; height: 4px; cursor: s-resize; }
+  .rz-e  { top: 56px; bottom: 8px; right: 0; width: 4px; cursor: e-resize; }
+  .rz-w  { top: 56px; bottom: 8px; left: 0; width: 4px; cursor: w-resize; }
+  .rz-se { bottom: 0; right: 0; width: 8px; height: 8px; cursor: se-resize; }
+  .rz-sw { bottom: 0; left: 0; width: 8px; height: 8px; cursor: sw-resize; }
+
+  .icon-input {
+    width: 70px;
+    text-align: center;
+  }
+  .kbd-input {
+    background: #1d1d1d;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 0 10px;
+    height: 30px;
+    color: #eee;
+    font-size: 12px;
+    outline: none;
+    width: 140px;
+    font-family: monospace;
+  }
+  .kbd-input:focus { border-color: #6a8; }
+
+  .badge {
+    background: #e44;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 8px;
+    min-width: 16px;
+    text-align: center;
+    line-height: 1.4;
+    margin-left: 2px;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+  }
 </style>

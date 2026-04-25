@@ -68,6 +68,8 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
     }
     // Inyección del navigator spoof — útil para WhatsApp y otros que detectan SO.
     builder = builder.initialization_script(NAV_SPOOF);
+    let unread_script = unread_watcher_script(&svc.id);
+    builder = builder.initialization_script(&unread_script);
 
     let svc_id = svc.id.clone();
     builder = builder.on_page_load(move |webview, payload| {
@@ -121,6 +123,42 @@ pub fn apply_active<R: Runtime>(
         });
     }
     Ok(())
+}
+
+fn unread_watcher_script(svc_id: &str) -> String {
+    format!(
+        r#"(function () {{
+  if (window.__KOLIBRI_UNREAD__) return;
+  window.__KOLIBRI_UNREAD__ = true;
+  var SID = "{sid}";
+  var last = -1;
+  function parse(t) {{
+    if (!t) return 0;
+    var m = t.match(/\((\d+)\)/) || t.match(/^(\d+)\s/) || t.match(/\[(\d+)\]/);
+    return m ? parseInt(m[1], 10) || 0 : 0;
+  }}
+  function send(n) {{
+    if (n === last) return;
+    last = n;
+    try {{
+      var inv = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+      if (inv) inv('emit_unread', {{ serviceId: SID, count: n }});
+    }} catch (e) {{}}
+  }}
+  function tick() {{ send(parse(document.title)); }}
+  function attach() {{
+    var t = document.querySelector('title');
+    if (!t) {{ setTimeout(attach, 500); return; }}
+    new MutationObserver(tick).observe(t, {{ childList: true, characterData: true, subtree: true }});
+    tick();
+  }}
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+  else attach();
+  setInterval(tick, 5000);
+}})();
+"#,
+        sid = svc_id.replace('"', "\\\"")
+    )
 }
 
 const NAV_SPOOF: &str = r#"

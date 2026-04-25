@@ -21,6 +21,8 @@ pub struct Service {
 pub struct PersistedState {
     pub services: Vec<Service>,
     pub active_id: Option<String>,
+    #[serde(default)]
+    pub toggle_shortcut: Option<String>,
 }
 
 #[derive(Default)]
