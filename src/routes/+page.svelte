@@ -1,156 +1,220 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import AddServiceModal from "$lib/AddServiceModal.svelte";
 
-  let name = $state("");
-  let greetMsg = $state("");
+  type Service = {
+    id: string;
+    name: string;
+    url: string;
+    icon: string | null;
+    color: string | null;
+  };
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  let services = $state<Service[]>([]);
+  let activeId = $state<string | null>(null);
+  let showAdd = $state(false);
+
+  async function refresh() {
+    services = await invoke<Service[]>("list_services");
   }
+
+  async function onPick(svc: { name: string; url: string; icon: string | null; color?: string }) {
+    showAdd = false;
+    const created = await invoke<Service>("add_service", {
+      name: svc.name,
+      url: svc.url,
+      icon: svc.icon,
+      color: svc.color ?? null,
+    });
+    await refresh();
+    await selectService(created.id);
+  }
+
+  async function selectService(id: string) {
+    activeId = id;
+    await invoke("set_active_service", { id });
+  }
+
+  async function removeService(id: string, e: Event) {
+    e.stopPropagation();
+    if (!confirm("¿Eliminar servicio?")) return;
+    await invoke("remove_service", { id });
+    if (activeId === id) {
+      activeId = null;
+      await invoke("set_active_service", { id: null });
+    }
+    await refresh();
+  }
+
+  function initialOf(s: Service): string {
+    if (s.icon && s.icon.length > 0) return s.icon.charAt(0);
+    return s.name.charAt(0).toUpperCase();
+  }
+
+  const minimize = () => invoke("window_minimize");
+  const toggleMax = () => invoke("window_toggle_maximize");
+  const closeWin = () => invoke("window_close");
+
+  onMount(refresh);
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div class="bar" data-tauri-drag-region>
+  <button class="add" onclick={() => (showAdd = true)} title="Agregar servicio">＋</button>
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+  <div class="tabs" data-tauri-drag-region>
+    {#each services as s (s.id)}
+      <button
+        class="tab"
+        class:active={s.id === activeId}
+        onclick={() => selectService(s.id)}
+        title={s.name}
+      >
+        <span class="tab-icon" style:background={s.color ?? "#444"}>{initialOf(s)}</span>
+        <span class="tab-name">{s.name}</span>
+        <span
+          class="tab-close"
+          role="button"
+          tabindex="0"
+          onclick={(e) => removeService(s.id, e)}
+          onkeydown={(e) => e.key === "Enter" && removeService(s.id, e)}
+          aria-label="Eliminar servicio"
+        >×</span>
+      </button>
+    {/each}
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+  <div class="spacer" data-tauri-drag-region></div>
+
+  <div class="controls">
+    <button class="ctrl" onclick={() => alert("Config (próximamente)")} title="Configuración">⚙</button>
+    <button class="ctrl" onclick={minimize} title="Minimizar">─</button>
+    <button class="ctrl" onclick={toggleMax} title="Maximizar">▢</button>
+    <button class="ctrl close" onclick={closeWin} title="Cerrar">×</button>
+  </div>
+</div>
+
+{#if showAdd}
+  <AddServiceModal onclose={() => (showAdd = false)} onpick={onPick} />
+{/if}
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  :global(html, body) {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    font-family: Inter, system-ui, sans-serif;
+    background: #1e1e1e;
+    color: #eee;
+    user-select: none;
   }
 
-  a:hover {
-    color: #24c8db;
+  .bar {
+    display: flex;
+    align-items: center;
+    height: 44px;
+    background: #222;
+    border-bottom: 1px solid #2c2c2c;
+    padding: 0 4px;
+    gap: 4px;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .add {
+    background: #2c2c2c;
+    border: 1px solid #3a3a3a;
+    color: #ccc;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    font-size: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+    line-height: 1;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
+  .add:hover { background: #383838; color: #fff; }
 
+  .tabs {
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+    flex-shrink: 1;
+    min-width: 0;
+    height: 100%;
+    align-items: center;
+  }
+  .tabs::-webkit-scrollbar { height: 0; }
+
+  .tab {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    padding: 0 10px 0 4px;
+    background: #2a2a2a;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 12px;
+    flex-shrink: 0;
+    max-width: 180px;
+  }
+  .tab:hover { background: #333; }
+  .tab.active {
+    background: #383838;
+    border-color: #4a4a4a;
+    color: #fff;
+  }
+  .tab-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+    color: white;
+    font-weight: 700;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .tab-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab-close {
+    color: #777;
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .tab-close:hover { background: #4a2222; color: #f88; }
+
+  .spacer {
+    flex: 1;
+    min-width: 12px;
+    height: 100%;
+  }
+
+  .controls {
+    display: flex;
+    gap: 0;
+    flex-shrink: 0;
+    height: 100%;
+    align-items: center;
+  }
+  .ctrl {
+    width: 38px;
+    height: 100%;
+    background: transparent;
+    border: none;
+    color: #aaa;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .ctrl:hover { background: #333; color: #fff; }
+  .ctrl.close:hover { background: #c00; color: #fff; }
 </style>

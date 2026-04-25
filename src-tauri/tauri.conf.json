@@ -12,9 +12,15 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Kolibri",
         "width": 1200,
-        "height": 800
+        "height": 800,
+        "decorations": false,
+        "transparent": false,
+        "shadow": false,
+        "minWidth": 600,
+        "minHeight": 400
       }
     ],
     "security": {
