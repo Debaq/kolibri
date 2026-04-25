@@ -79,6 +79,7 @@ pub fn ensure_service_window<R: Runtime>(
         .shadow(false)
         .visible(false)
         .skip_taskbar(true)
+        .maximized(true)
         .min_inner_size(600.0, 400.0)
         .inner_size(1200.0, 800.0)
         .initialization_script(BAR_JS);
@@ -148,34 +149,19 @@ pub fn show_only<R: Runtime>(app: &AppHandle<R>, target: Option<&str>) -> tauri:
         .map(|s| *s.inner.lock().unwrap())
         .unwrap_or_default();
 
-    // Mostrar primero target, luego ocultar resto (evita flicker).
     let target_label = match target {
         Some(id) => label_for(id),
         None => "main".to_string(),
     };
 
+    // Mostrar y enfocar target. NO ocultamos las otras: quedan tapadas por debajo
+    // sin map/unmap (evita animación cierre/apertura del compositor en Wayland).
     if let Some(w) = app.get_webview_window(&target_label) {
         if geom.width > 0 && geom.height > 0 {
             apply_geometry_to(&w, geom);
         }
         let _ = w.show();
         let _ = w.set_focus();
-    }
-
-    // Ocultar todas las demás
-    if target_label != "main" {
-        if let Some(w) = app.get_webview_window("main") {
-            let _ = w.hide();
-        }
-    }
-    for svc in services.iter() {
-        let lbl = label_for(&svc.id);
-        if lbl == target_label {
-            continue;
-        }
-        if let Some(w) = app.get_webview_window(&lbl) {
-            let _ = w.hide();
-        }
     }
 
     let _ = app.emit("kolibri:active_changed", target);
@@ -256,11 +242,11 @@ pub fn window_toggle_maximize<R: Runtime>(window: tauri::Window<R>) -> Result<()
 
 #[tauri::command]
 pub fn window_close<R: Runtime>(app: AppHandle<R>, window: tauri::Window<R>) -> Result<(), String> {
-    eprintln!("[KOLIBRI] window_close from label={}", window.label());
     if window.label() != "main" {
-        window.hide().map_err(|e| e.to_string())?;
+        // Volver a main sin ocultar el servicio (evita animación KDE).
         show_only(&app, None).map_err(|e| e.to_string())?;
     } else {
+        // En main, cerrar = ocultar app a tray.
         window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())

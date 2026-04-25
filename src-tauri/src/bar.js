@@ -2,6 +2,26 @@
   if (window.__KOLIBRI_BAR__) return;
   window.__KOLIBRI_BAR__ = true;
 
+  // Spoof navigator props para que sitios (WhatsApp Web, etc) no nos crean Mac/Safari/iOS.
+  // initialization_script corre antes que los scripts del sitio.
+  try {
+    var def = function (prop, value) {
+      try {
+        Object.defineProperty(navigator, prop, { get: function () { return value; }, configurable: true });
+      } catch (e) {}
+    };
+    def('platform', 'Linux x86_64');
+    def('vendor', 'Google Inc.');
+    def('vendorSub', '');
+    def('product', 'Gecko');
+    def('productSub', '20030107');
+    def('appName', 'Netscape');
+    def('appCodeName', 'Mozilla');
+    def('appVersion', '5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+    def('oscpu', undefined);
+    def('maxTouchPoints', 0);
+  } catch (e) { console.warn('[Kolibri] navigator spoof falló:', e); }
+
   var BAR_H = 44;
   var POLL_MS = 1500;
 
@@ -56,8 +76,10 @@
     "  max-width:180px; flex-shrink:0; }" +
     ".__klb_tab:hover { background:#333; }" +
     ".__klb_tab.active { background:#383838; border-color:#4a4a4a; color:#fff; }" +
-    ".__klb_icon { width:26px; height:26px; border-radius:6px; display:grid;" +
-    "  place-items:center; color:white; font-weight:700; font-size:12px; flex-shrink:0; }" +
+    ".__klb_icon { width:26px !important; height:26px !important; border-radius:6px !important;" +
+    "  display:grid !important; place-items:center !important; color:#fff !important;" +
+    "  font-weight:700 !important; font-size:12px !important; flex-shrink:0 !important;" +
+    "  font-family:system-ui,sans-serif !important; line-height:1 !important; }" +
     ".__klb_name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" +
     "  flex:1; min-width:0; }" +
     ".__klb_close { color:#777; font-size:14px; padding:2px 4px; border-radius:4px;" +
@@ -80,22 +102,46 @@
     style.textContent = CSS;
     document.head.appendChild(style);
 
-    bar = el('div', { id: '__klb_bar' });
-    bar.setAttribute('data-tauri-drag-region', 'true');
-    bar.addEventListener('mousedown', function (ev) {
-      if (ev.button !== 0) return;
-      var t = ev.target;
-      if (t && t.closest && t.closest('button, .__klb_close, [data-no-drag]')) return;
-      if (ev.detail === 2) {
-        invoke('window_toggle_maximize');
-        return;
+    function makeBar() {
+      var b = el('div', { id: '__klb_bar' });
+      b.setAttribute('data-tauri-drag-region', 'true');
+      b.addEventListener('mousedown', function (ev) {
+        if (ev.button !== 0) return;
+        var t = ev.target;
+        if (t && t.closest && t.closest('button, .__klb_close, [data-no-drag]')) return;
+        if (ev.detail === 2) {
+          invoke('window_toggle_maximize');
+          return;
+        }
+        invoke('plugin:window|start_dragging').catch(function (e) { console.error('drag', e); });
+      });
+      return b;
+    }
+
+    function ensureStyleAttached() {
+      if (!document.head.contains(style)) document.head.appendChild(style);
+    }
+    function ensureBarAttached() {
+      if (!document.body) return;
+      if (!document.body.contains(bar)) {
+        bar = makeBar();
+        document.body.appendChild(bar);
+        render();
       }
-      invoke('plugin:window|start_dragging').catch(function (e) { console.error('drag', e); });
-    });
+    }
+
+    bar = makeBar();
     document.body.appendChild(bar);
 
+    // Re-inject si el sitio (Gmail/SPAs) borra body.
+    var mo = new MutationObserver(function () {
+      ensureStyleAttached();
+      ensureBarAttached();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+
     function render() {
-      bar.innerHTML = '';
+      while (bar.firstChild) bar.removeChild(bar.firstChild);
       var addBtn = el('button', {
         class: '__klb_add',
         title: 'Agregar servicio',
@@ -112,7 +158,9 @@
           title: s.name,
           onclick: function () { invoke('switch_service', { id: s.id }); }
         });
-        tab.appendChild(el('span', { class: '__klb_icon', style: { background: s.color || '#444' } }, [initial]));
+        var iconSpan = el('span', { class: '__klb_icon' }, [initial]);
+        iconSpan.style.setProperty('background', s.color || '#444', 'important');
+        tab.appendChild(iconSpan);
         tab.appendChild(el('span', { class: '__klb_name' }, [s.name]));
         var closeBtn = el('span', { class: '__klb_close', title: 'Eliminar' }, ['×']);
         closeBtn.onclick = function (ev) {
@@ -139,9 +187,13 @@
     function refresh() {
       Promise.all([invoke('list_services'), invoke('get_active_service')])
         .then(function (r) { services = r[0] || []; activeId = r[1]; render(); })
-        .catch(function (e) { console.error('Kolibri bar:', e); });
+        .catch(function (e) {
+          console.error('[Kolibri bar] refresh error:', e);
+          render(); // dibuja al menos los controles
+        });
     }
 
+    render(); // pinta vacío inmediatamente
     refresh();
     if (T.event && T.event.listen) {
       T.event.listen('kolibri:services_changed', refresh);

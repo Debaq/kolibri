@@ -65,6 +65,15 @@ pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         *guard = parsed;
     }
     let snapshot = state.inner.lock().unwrap().clone();
+
+    // Capturar geometría del main antes de crear service windows
+    // para que todas nazcan en la misma posición/tamaño.
+    if let Some(w) = app.get_window("main") {
+        if let Some(g) = webview::snapshot_geometry(&w) {
+            webview::store_geometry(app, g);
+        }
+    }
+
     for svc in snapshot.services.iter() {
         let _ = webview::ensure_service_window(app, svc);
     }

@@ -20,6 +20,7 @@
         "decorations": false,
         "transparent": false,
         "shadow": false,
+        "maximized": true,
         "minWidth": 600,
         "minHeight": 400
       }
