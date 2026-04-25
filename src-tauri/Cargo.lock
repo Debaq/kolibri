@@ -1915,6 +1915,7 @@ name = "kolibri"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gtk",
  "serde",
  "serde_json",
  "tauri",
