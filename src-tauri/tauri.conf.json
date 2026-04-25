@@ -10,7 +10,6 @@
     "frontendDist": "../build"
   },
   "app": {
-    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
@@ -20,7 +19,6 @@
         "decorations": false,
         "transparent": false,
         "shadow": false,
-        "maximized": true,
         "minWidth": 600,
         "minHeight": 400
       }

@@ -33,10 +33,17 @@
     });
     await refresh();
     await invoke("switch_service", { id: created.id });
+    activeId = created.id;
   }
 
   async function selectService(id: string) {
     await invoke("switch_service", { id });
+    activeId = id;
+  }
+
+  async function showHome() {
+    await invoke("switch_service", { id: null });
+    activeId = null;
   }
 
   async function removeService(id: string, e: Event) {
@@ -70,7 +77,6 @@
     await refresh();
     unlisteners.push(await listen("kolibri:services_changed", refresh));
     unlisteners.push(await listen("kolibri:active_changed", refresh));
-    unlisteners.push(await listen("kolibri:open_add_dialog", () => (showAdd = true)));
   });
 
   onDestroy(() => unlisteners.forEach((u) => u()));
@@ -104,6 +110,7 @@
   <div class="spacer" data-tauri-drag-region></div>
 
   <div class="controls">
+    <button class="ctrl" onclick={showHome} title="Inicio">⌂</button>
     <button class="ctrl" onclick={() => alert("Config (próximamente)")} title="Configuración">⚙</button>
     <button class="ctrl" onclick={minimize} title="Minimizar">─</button>
     <button class="ctrl" onclick={toggleMax} title="Maximizar">▢</button>
@@ -116,7 +123,7 @@
     <h1>Bienvenido a Kolibri</h1>
     <p>Agrega tu primer servicio para empezar</p>
     <button class="cta" onclick={() => (showAdd = true)}>+ Agregar servicio</button>
-  {:else}
+  {:else if !activeId}
     <h1>Kolibri</h1>
     <p>Selecciona un servicio en la barra de arriba</p>
   {/if}
