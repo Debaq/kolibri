@@ -76,12 +76,9 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
         LogicalSize::new(800.0, 600.0),
     )?;
 
-    // Recién montado: oculto por defecto. apply_active lo mostrará si corresponde.
-    if let Some(wv) = app.get_webview(&label) {
-        let _ = wv.with_webview(|pw| {
-            pw.inner().hide();
-        });
-    }
+    // No ocultar antes de que widget se realice: WebKitGTK cancela el load
+    // ("Load request cancelled") si el widget se esconde antes de mapear.
+    // apply_active() ocultará los inactivos una vez que el load arrancó.
     Ok(())
 }
 

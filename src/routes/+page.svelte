@@ -13,13 +13,14 @@
     color: string | null;
   };
 
-  type Mode = "tabs" | "picker" | "custom";
+  type Mode = "tabs" | "picker" | "custom" | "remove";
 
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
   let mode = $state<Mode>("tabs");
   let customName = $state("");
   let customUrl = $state("");
+  let pendingRemoveId = $state<string | null>(null);
   let unlisteners: UnlistenFn[] = [];
 
   async function refresh() {
@@ -69,11 +70,21 @@
     activeId = null;
   }
 
-  async function removeService(id: string, e: Event) {
-    e.stopPropagation();
-    if (!confirm("¿Eliminar servicio?")) return;
-    await invoke("remove_service", { id });
+  function askRemove(id: string) {
+    pendingRemoveId = id;
+  }
+
+  async function confirmRemove() {
+    if (!pendingRemoveId) return;
+    await invoke("remove_service", { id: pendingRemoveId });
+    pendingRemoveId = null;
+    mode = "tabs";
     await refresh();
+  }
+
+  function startRemove() {
+    pendingRemoveId = null;
+    mode = "remove";
   }
 
   function initialOf(s: Service): string {
@@ -105,6 +116,15 @@
     customUrl = "";
   }
 
+  function cancelRemove() {
+    pendingRemoveId = null;
+    mode = "tabs";
+  }
+
+  function cancelConfirm() {
+    pendingRemoveId = null;
+  }
+
   onMount(async () => {
     await refresh();
     unlisteners.push(await listen("kolibri:services_changed", refresh));
@@ -128,17 +148,38 @@
         >
           <span class="tab-icon" style:background={s.color ?? "#444"}>{initialOf(s)}</span>
           <span class="tab-name">{s.name}</span>
-          <span
-            class="tab-close"
-            role="button"
-            tabindex="0"
-            onclick={(e) => removeService(s.id, e)}
-            onkeydown={(e) => e.key === "Enter" && removeService(s.id, e)}
-            aria-label="Eliminar"
-          >×</span>
         </button>
       {/each}
     </div>
+  {:else if mode === "remove"}
+    <button class="add cancel" onclick={cancelRemove} title="Cancelar">×</button>
+    {#if pendingRemoveId}
+      {@const target = services.find((s) => s.id === pendingRemoveId)}
+      {#if target}
+        <div class="picker confirm-row">
+          <div class="pick remove-pick confirm-target" aria-disabled="true">
+            <span class="pick-icon" style:background={target.color ?? "#444"}>{initialOf(target)}</span>
+            <span class="pick-name">{target.name}</span>
+          </div>
+          <span class="confirm-text">¿Realmente quiere eliminar?</span>
+          <button class="confirm-yes" onclick={confirmRemove}>Aceptar</button>
+          <button class="confirm-no" onclick={cancelRemove}>Cancelar</button>
+        </div>
+      {/if}
+    {:else}
+      <div class="picker">
+        {#each services as s (s.id)}
+          <button
+            class="pick remove-pick"
+            onclick={() => askRemove(s.id)}
+            title="Eliminar {s.name}"
+          >
+            <span class="pick-icon" style:background={s.color ?? "#444"}>{initialOf(s)}</span>
+            <span class="pick-name">{s.name}</span>
+          </button>
+        {/each}
+      </div>
+    {/if}
   {:else if mode === "picker"}
     <button class="add cancel" onclick={cancelPicker} title="Cancelar">×</button>
     <div class="picker">
@@ -183,6 +224,9 @@
   <div class="controls">
     <button class="ctrl" onclick={showHome} title="Inicio">⌂</button>
     <button class="ctrl" onclick={() => alert("Config (próximamente)")} title="Configuración">⚙</button>
+    {#if services.length > 0}
+      <button class="ctrl ctrl-remove" onclick={startRemove} title="Eliminar servicio">🗑</button>
+    {/if}
     <button class="ctrl" onclick={minimize} title="Minimizar">─</button>
     <button class="ctrl" onclick={toggleMax} title="Maximizar">▢</button>
     <button class="ctrl close" onclick={closeWin} title="Cerrar">×</button>
@@ -287,15 +331,27 @@
     text-overflow: ellipsis;
     font-size: 11px;
   }
-  .tab-close {
-    color: #777;
-    font-size: 14px;
-    line-height: 1;
-    padding: 2px 4px;
-    border-radius: 4px;
+  .ctrl-remove:hover { background: #4a2222; color: #f88; }
+
+  .remove-pick { border-color: #5a2a2a; }
+  .remove-pick:hover { background: #4a2222; border-color: #8a3a3a; color: #fdd; }
+
+  .confirm-row { gap: 10px; }
+  .confirm-target { cursor: default; pointer-events: none; opacity: 0.85; }
+  .confirm-text { color: #f88; font-size: 12px; white-space: nowrap; }
+  .confirm-yes, .confirm-no {
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 6px;
+    border: none;
+    font-weight: 600;
     cursor: pointer;
+    font-size: 12px;
   }
-  .tab-close:hover { background: #4a2222; color: #f88; }
+  .confirm-yes { background: #c33; color: #fff; }
+  .confirm-yes:hover { background: #d44; }
+  .confirm-no { background: #2c2c2c; color: #ccc; border: 1px solid #3a3a3a; }
+  .confirm-no:hover { background: #383838; color: #fff; }
 
   .picker {
     display: flex;
