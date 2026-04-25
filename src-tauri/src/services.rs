@@ -110,6 +110,79 @@ pub fn add_service<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn update_service<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    url: Option<String>,
+    icon: Option<String>,
+    color: Option<String>,
+) -> Result<Service, String> {
+    let updated;
+    let url_changed;
+    let was_active;
+    {
+        let mut g = state.inner.lock().unwrap();
+        let svc = g
+            .services
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| "service not found".to_string())?;
+        url_changed = url.as_ref().map(|u| u != &svc.url).unwrap_or(false);
+        if let Some(n) = name {
+            svc.name = n;
+        }
+        if let Some(u) = url {
+            svc.url = u;
+        }
+        if let Some(i) = icon {
+            svc.icon = if i.is_empty() { None } else { Some(i) };
+        }
+        if let Some(c) = color {
+            svc.color = if c.is_empty() { None } else { Some(c) };
+        }
+        updated = svc.clone();
+        was_active = g.active_id.as_deref() == Some(&id);
+        save(&app, &g).map_err(|e| e.to_string())?;
+    }
+    if url_changed {
+        webview::unmount(&app, &id).map_err(|e| e.to_string())?;
+        webview::ensure_mounted(&app, &updated).map_err(|e| e.to_string())?;
+        if was_active {
+            webview::set_active(&app, Some(&id)).map_err(|e| e.to_string())?;
+        }
+    }
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(updated)
+}
+
+#[tauri::command]
+pub fn reorder_services<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    let mut g = state.inner.lock().unwrap();
+    let mut by_id: std::collections::HashMap<String, Service> =
+        g.services.drain(..).map(|s| (s.id.clone(), s)).collect();
+    let mut new_order: Vec<Service> = Vec::with_capacity(ids.len() + by_id.len());
+    for id in ids.iter() {
+        if let Some(s) = by_id.remove(id) {
+            new_order.push(s);
+        }
+    }
+    for (_, s) in by_id.drain() {
+        new_order.push(s);
+    }
+    g.services = new_order;
+    save(&app, &g).map_err(|e| e.to_string())?;
+    drop(g);
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(())
+}
+
+#[tauri::command]
 pub fn remove_service<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,

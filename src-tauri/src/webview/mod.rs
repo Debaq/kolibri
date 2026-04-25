@@ -86,6 +86,15 @@ pub fn get_active_service(state: State<'_, AppState>) -> Option<String> {
 }
 
 #[tauri::command]
+pub fn reload_service<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    let label = label_for(&id);
+    if let Some(wv) = app.get_webview(&label) {
+        wv.reload().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn window_minimize<R: Runtime>(window: tauri::Window<R>) -> Result<(), String> {
     window.minimize().map_err(|e| e.to_string())
 }

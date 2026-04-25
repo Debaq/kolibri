@@ -14,31 +14,27 @@ Falta desde acá:
 
 ## Limpieza inmediata (antes de merge a main)
 
-- [ ] Borrar `src/lib/AddServiceModal.svelte` (ya no se usa, picker es inline)
-- [ ] Borrar `set_sidebar_collapsed` y `sidebar_collapsed` field en `PersistedState` (dead code)
-- [ ] Quitar `eprintln!` debug si quedó alguno
+- [x] Borrar `src/lib/AddServiceModal.svelte` (ya no se usa, picker es inline)
+- [x] Borrar `set_sidebar_collapsed` y `sidebar_collapsed` field en `PersistedState` (ya estaba limpio)
+- [x] Quitar `eprintln!` debug (ya no quedaban)
 - [ ] Probar resize de ventana (ahora que está maximizada por defecto, salir de maximizado y verificar)
-- [ ] Mergear branch a `main`
+- [x] Mergear branch a `main`
 
 ## UX corto plazo
 
-- [ ] **Iconos reales por servicio**: fetch del favicon o usar un set local. Hoy es la primer letra sobre un color del catálogo
-- [ ] **Reordenar tabs** vía drag-and-drop (HTML5 drag o pointer events)
-- [ ] **Atajos**:
+- [x] **Iconos reales por servicio**: favicon vía `google.com/s2/favicons` con fallback a inicial sobre color
+- [x] **Reordenar tabs** vía drag-and-drop HTML5 + comando `reorder_services`
+- [x] **Atajos** (a nivel bar Svelte — solo cuando bar tiene foco):
   - `Ctrl+1..9` → switch a tab N
   - `Ctrl+T` → abrir picker
-  - `Ctrl+W` → cerrar tab actual
-  - Atajo global `Ctrl+Alt+K` → mostrar/ocultar app
-- [ ] **Settings panel**: hoy `⚙` hace `alert`. Hacer panel real:
-  - Renombrar servicios
-  - Cambiar URL / icono / color
-  - Reordenar
-  - Tema
-  - Atajos
-  - Empezar al iniciar sesión
-- [ ] **Reload button visible** cuando un servicio falla a cargar (detectar via `load_failed` event Wry)
-- [ ] **Skeleton/spinner** durante la primera carga del servicio
-- [ ] **Botón Home (⌂)** ya está; verificar que esté claro cómo volver
+  - `Ctrl+W` → eliminar servicio actual
+  - `Ctrl+0` / `Ctrl+H` → inicio
+- [ ] **Atajos globales / desde child webview** (pendiente): requiere `tauri-plugin-global-shortcut` o init_script + IPC. Atajo global `Ctrl+Alt+K` show/hide
+- [x] **Settings panel** real: tema dark/light, rename, cambiar URL, color, reordenar (botones up/down), referencia atajos
+  - Pendiente: editar icono custom, autostart al iniciar sesión, configurar atajos
+- [x] **Reload button** siempre visible cuando hay activo + comando `reload_service`. Detección formal de `load_failed` postergada (Wry no expone hook directo en Tauri 2)
+- [x] **Spinner en tab activa** durante carga (`on_page_load` Started/Finished). Skeleton overlay sobre área del child webview no implementado: child webview es widget GTK nativo, tapa overlays del Svelte
+- [x] **Botón Home (⌂)** ya está; verificar que esté claro cómo volver
 
 ## Personalización por servicio
 

@@ -1,7 +1,7 @@
 use gtk::prelude::*;
 use tauri::{
-    webview::WebviewBuilder, AppHandle, LogicalPosition, LogicalSize, Manager, Runtime,
-    WebviewUrl,
+    webview::{PageLoadEvent, WebviewBuilder},
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl,
 };
 
 use crate::services::{data_dir_for, Service};
@@ -68,6 +68,17 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
     }
     // Inyección del navigator spoof — útil para WhatsApp y otros que detectan SO.
     builder = builder.initialization_script(NAV_SPOOF);
+
+    let svc_id = svc.id.clone();
+    builder = builder.on_page_load(move |webview, payload| {
+        let phase = match payload.event() {
+            PageLoadEvent::Started => "started",
+            PageLoadEvent::Finished => "finished",
+        };
+        let _ = webview
+            .app_handle()
+            .emit("kolibri:page_load", (svc_id.clone(), phase));
+    });
 
     // GtkBox ignora pos/size, valores son placeholders.
     window.add_child(
