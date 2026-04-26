@@ -29,8 +29,8 @@ Falta desde acá:
   - `Ctrl+T` → abrir picker
   - `Ctrl+W` → eliminar servicio actual
   - `Ctrl+0` / `Ctrl+H` → inicio
-- [ ] **Atajos globales / desde child webview** (pendiente): requiere `tauri-plugin-global-shortcut` o init_script + IPC. Atajo global `Ctrl+Alt+K` show/hide
-- [x] **Settings panel** real: tema dark/light, rename, cambiar URL, color, reordenar (botones up/down), referencia atajos
+- [x] **Atajo global** `Ctrl+Alt+K` show/hide via `tauri-plugin-global-shortcut`. UI en Settings (capture + save) con `get/set_toggle_shortcut`. Atajos desde child webview siguen pendientes (requeriría init_script + IPC)
+- [x] **Settings panel** real: tema dark/light/auto (sigue prefers-color-scheme), rename, cambiar URL, color, reordenar (botones up/down), referencia atajos
   - Pendiente: editar icono custom, autostart al iniciar sesión, configurar atajos
 - [x] **Reload button** siempre visible cuando hay activo + comando `reload_service`. Detección formal de `load_failed` postergada (Wry no expone hook directo en Tauri 2)
 - [x] **Spinner en tab activa** durante carga (`on_page_load` Started/Finished). Skeleton overlay sobre área del child webview no implementado: child webview es widget GTK nativo, tapa overlays del Svelte
@@ -68,7 +68,7 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 
 ## Sistema / packaging
 
-- [ ] Iconos de la app (32x32, 128x128, 128x128@2x, .icns, .ico) — los placeholders están en `src-tauri/icons/`
+- [x] Iconos de la app (32x32, 64x64, 128x128, 128x128@2x, .icns, .ico, Square*, Android, iOS) generados desde `logo.png` con `pnpm tauri icon`
 - [ ] Auto-update via Tauri updater (firma + endpoint)
 - [ ] Empaquetado `.deb`, `.rpm`, `.AppImage`, `.msi`
 - [ ] CI GitHub Actions: build cross-platform + release on tag
@@ -78,8 +78,8 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 
 - [ ] **Backup/restore**: export ZIP con `services.json` + `sessions/`
 - [ ] **Modo invitado**: sesión efímera por servicio (no persiste cookies)
-- [ ] **Limpiar cookies/cache** desde Settings, por servicio
-- [ ] **Logout** un servicio sin perderlo de la lista
+- [x] **Limpiar cookies/cache** desde Settings, por servicio (cmd `clear_service_session`, botón en edit modal)
+- [x] **Logout** un servicio sin perderlo de la lista (mismo cmd, botón "Cerrar sesión" en edit modal)
 
 ## Deuda técnica detectada (review 2026-04-25)
 
@@ -98,7 +98,7 @@ Backend Rust:
 Frontend:
 
 - [ ] **`+page.svelte` 992 líneas**: monolito. Romper en componentes (`Bar.svelte`, `Tabs.svelte`, `Settings.svelte`, `Picker.svelte`)
-- [ ] **Cero tests**: agregar al menos tests unitarios de `services.rs` (add/remove/reorder) y `favicons.rs` (detect_mime, looks_valid)
+- [x] **Tests unitarios** backend: `services.rs` (`sanitize_host`, `host_of`, `allocate_slot`, `apply_reorder`) y `favicons.rs` (`detect_mime` PNG/GIF/JPEG/WEBP/SVG/ico, `looks_valid`, `safe_name`, `host_from`). 20 tests total, `cargo test --lib` verde. `apply_reorder` extraído como helper puro desde `reorder_services`.
 
 ## Optimización de RAM (branch `feat/ram-optimization`, PR #2 — 2026-04-26)
 
@@ -140,7 +140,7 @@ El segundo WebProcess remanente es un sandbox iframe forzado por `Cross-Origin-E
 
 ### Pendientes detectados durante el trabajo
 
-- [ ] **Bug migración**: la heurística `migrate_old_sessions` busca formato UUID v4 (`len==36, 4 guiones`) pero los IDs reales de Kolibri son timestamps (`svc_177...`, `1777...`). Nunca se gatilla y los dirs viejos coexisten con `by-host/`. Cambiar heurística a "cualquier dir top-level distinto de `by-host`".
+- [x] **Bug migración**: heurística `migrate_old_sessions` ahora borra cualquier dir top-level distinto de `by-host` (UUIDs viejos, `svc_*`, timestamps). Borrado quirúrgico (no nukea `by-host`).
 - [ ] **Validar suspend con engine unificado**: ahora con 1 sólo WebProcess compartido, `suspend_service` mata el WebView pero el proceso sigue vivo (sirve a otros). Medir si realmente libera RAM o solo libera DOM/JS de esa tab. Posiblemente revisar UX del feature.
 - [ ] **`new_ephemeral` en wry sin patch**: `WebContext::new_ephemeral()` no usa builder, no se puede inyectar PSON ahí. Kolibri no usa modo incógnito → inocuo, pero dejar nota si se agrega.
 - [ ] **Rebase strategy ante upgrade de Tauri**: documentar el procedimiento de re-vendor de wry (actualmente sólo está en commits del branch).
@@ -158,5 +158,4 @@ El segundo WebProcess remanente es un sandbox iframe forzado por `Cross-Origin-E
 - **Workspaces**: agrupar servicios (ej "Trabajo" = Slack+Gmail+Notion; "Personal" = WhatsApp+IG). Switch entre workspaces como switch entre layouts
 - **Plugin API**: que terceros agreguen integraciones específicas por servicio (badge custom, atajos, scripts)
 - **Sync metadata cross-device**: lista de servicios via WebDAV/Nextcloud (sin cookies)
-- **Dark/light auto**: respetar tema del SO
 - **Scratchpad**: tab especial con notas locales markdown

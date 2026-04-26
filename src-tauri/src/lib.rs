@@ -159,6 +159,7 @@ pub fn run() {
             services::set_inactive_suspend_minutes,
             services::set_keep_alive,
             services::suspend_service,
+            services::clear_service_session,
             webview::switch_service,
             webview::get_active_service,
             webview::reload_service,

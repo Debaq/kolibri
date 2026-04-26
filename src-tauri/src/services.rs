@@ -133,27 +133,20 @@ fn migrate_old_sessions<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<bool> {
         return Ok(false);
     }
     let mut found_old = false;
-    let mut has_new = false;
     for entry in fs::read_dir(&sessions_dir)?.flatten() {
         let name = entry.file_name();
         let s = name.to_string_lossy();
         if s == "by-host" {
-            has_new = true;
             continue;
         }
-        // UUID v4 con guiones tiene 36 chars
-        if s.len() == 36 && s.chars().filter(|c| *c == '-').count() == 4 {
+        // Cualquier dir top-level distinto de `by-host` es esquema viejo
+        // (UUIDs, timestamps `svc_177...`, `1777...`, etc.)
+        if entry.path().is_dir() {
+            let _ = fs::remove_dir_all(entry.path());
             found_old = true;
         }
     }
-    if found_old {
-        // Borrar TODO sessions/ (lo nuevo se recreará vacío)
-        let _ = fs::remove_dir_all(&sessions_dir);
-        let _ = fs::create_dir_all(&sessions_dir);
-        return Ok(true);
-    }
-    let _ = has_new;
-    Ok(false)
+    Ok(found_old)
 }
 
 pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -398,6 +391,23 @@ pub fn clear_service_color<R: Runtime>(
     Ok(())
 }
 
+/// Pure: aplica el orden `ids` a `services`. Los IDs no presentes en `ids`
+/// quedan al final (orden original relativo no garantizado por el HashMap).
+pub fn apply_reorder(services: Vec<Service>, ids: &[String]) -> Vec<Service> {
+    let mut by_id: std::collections::HashMap<String, Service> =
+        services.into_iter().map(|s| (s.id.clone(), s)).collect();
+    let mut out: Vec<Service> = Vec::with_capacity(by_id.len());
+    for id in ids.iter() {
+        if let Some(s) = by_id.remove(id) {
+            out.push(s);
+        }
+    }
+    for (_, s) in by_id.drain() {
+        out.push(s);
+    }
+    out
+}
+
 #[tauri::command]
 pub fn reorder_services<R: Runtime>(
     app: AppHandle<R>,
@@ -405,18 +415,8 @@ pub fn reorder_services<R: Runtime>(
     ids: Vec<String>,
 ) -> Result<(), String> {
     let mut g = state.inner.lock().expect("AppState mutex poisoned");
-    let mut by_id: std::collections::HashMap<String, Service> =
-        g.services.drain(..).map(|s| (s.id.clone(), s)).collect();
-    let mut new_order: Vec<Service> = Vec::with_capacity(ids.len() + by_id.len());
-    for id in ids.iter() {
-        if let Some(s) = by_id.remove(id) {
-            new_order.push(s);
-        }
-    }
-    for (_, s) in by_id.drain() {
-        new_order.push(s);
-    }
-    g.services = new_order;
+    let services = std::mem::take(&mut g.services);
+    g.services = apply_reorder(services, &ids);
     save(&app, &g).map_err(|e| e.to_string())?;
     drop(g);
     let _ = app.emit("kolibri:services_changed", ());
@@ -510,6 +510,62 @@ pub fn set_keep_alive<R: Runtime>(
     Ok(())
 }
 
+/// Limpia cookies/cache de un servicio borrando su data_dir (host+slot).
+/// Si otros servicios comparten ese dir (mismo host+slot), también los desmonta
+/// para que el próximo mount cree estado limpio. Devuelve la lista de IDs afectados.
+#[tauri::command]
+pub fn clear_service_session<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<String>, String> {
+    let (target, sharing, was_active_id) = {
+        let g = state.inner.lock().expect("AppState mutex poisoned");
+        let target = g
+            .services
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| "service not found".to_string())?;
+        let host = host_of(&target.url);
+        let slot = target.session_slot;
+        let sharing: Vec<Service> = g
+            .services
+            .iter()
+            .filter(|s| s.id != id && host_of(&s.url) == host && s.session_slot == slot)
+            .cloned()
+            .collect();
+        (target, sharing, g.active_id.clone())
+    };
+
+    let dir = data_dir_for_service(&app, &target).map_err(|e| e.to_string())?;
+    let mut affected = vec![target.id.clone()];
+    webview::unmount(&app, &target.id).map_err(|e| e.to_string())?;
+    for s in sharing.iter() {
+        affected.push(s.id.clone());
+        webview::unmount(&app, &s.id).map_err(|e| e.to_string())?;
+    }
+
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+
+    if let Some(active) = was_active_id.as_deref() {
+        if affected.iter().any(|i| i == active) {
+            // Remontar el activo en estado limpio
+            let g = state.inner.lock().expect("AppState mutex poisoned");
+            if let Some(svc) = g.services.iter().find(|s| s.id == active).cloned() {
+                drop(g);
+                webview::ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
+                webview::set_active(&app, Some(active)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(affected)
+}
+
 /// Suspende (unmount real) un servicio si NO es el activo y NO tiene keep_alive.
 #[tauri::command]
 pub fn suspend_service<R: Runtime>(
@@ -531,4 +587,101 @@ pub fn suspend_service<R: Runtime>(
     drop(g);
     webview::unmount(&app, &id).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn svc(id: &str, url: &str, slot: u32) -> Service {
+        Service {
+            id: id.to_string(),
+            name: id.to_string(),
+            url: url.to_string(),
+            icon: None,
+            color: None,
+            user_agent: None,
+            session_slot: slot,
+            keep_alive: false,
+        }
+    }
+
+    #[test]
+    fn sanitize_host_strips_unsafe() {
+        assert_eq!(sanitize_host("web.whatsapp.com"), "web.whatsapp.com");
+        assert_eq!(sanitize_host("foo:8080"), "foo_8080");
+        assert_eq!(sanitize_host("a/b\\c"), "a_b_c");
+    }
+
+    #[test]
+    fn host_of_extracts() {
+        assert_eq!(host_of("https://web.whatsapp.com/x"), "web.whatsapp.com");
+        assert_eq!(host_of("not-a-url"), "unknown");
+        assert_eq!(host_of("https://foo:8080/"), "foo");
+    }
+
+    #[test]
+    fn allocate_slot_first_is_zero() {
+        let v: Vec<Service> = vec![];
+        assert_eq!(allocate_slot(&v, "web.whatsapp.com"), 0);
+    }
+
+    #[test]
+    fn allocate_slot_picks_next_free() {
+        let v = vec![
+            svc("a", "https://web.whatsapp.com/", 0),
+            svc("b", "https://web.whatsapp.com/", 1),
+        ];
+        assert_eq!(allocate_slot(&v, "web.whatsapp.com"), 2);
+    }
+
+    #[test]
+    fn allocate_slot_reuses_gap() {
+        let v = vec![
+            svc("a", "https://web.whatsapp.com/", 0),
+            svc("b", "https://web.whatsapp.com/", 2),
+        ];
+        assert_eq!(allocate_slot(&v, "web.whatsapp.com"), 1);
+    }
+
+    #[test]
+    fn allocate_slot_isolated_per_host() {
+        let v = vec![svc("a", "https://gmail.com/", 0)];
+        assert_eq!(allocate_slot(&v, "web.whatsapp.com"), 0);
+    }
+
+    #[test]
+    fn apply_reorder_respects_ids() {
+        let v = vec![
+            svc("a", "https://a.com/", 0),
+            svc("b", "https://b.com/", 0),
+            svc("c", "https://c.com/", 0),
+        ];
+        let ids = vec!["c".to_string(), "a".to_string(), "b".to_string()];
+        let out = apply_reorder(v, &ids);
+        let order: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn apply_reorder_unknown_ids_appended() {
+        let v = vec![
+            svc("a", "https://a.com/", 0),
+            svc("b", "https://b.com/", 0),
+        ];
+        let ids = vec!["b".to_string()];
+        let out = apply_reorder(v, &ids);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "b");
+        assert_eq!(out[1].id, "a");
+    }
+
+    #[test]
+    fn apply_reorder_ignores_unknown_in_ids() {
+        let v = vec![svc("a", "https://a.com/", 0)];
+        let ids = vec!["zzz".to_string(), "a".to_string()];
+        let out = apply_reorder(v, &ids);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "a");
+    }
 }

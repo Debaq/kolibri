@@ -7,7 +7,7 @@
   import { isEnabled as autostartIsEnabled, enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
   import { openUrl } from "@tauri-apps/plugin-opener";
 
-  type Theme = "dark" | "light";
+  type Theme = "dark" | "light" | "auto";
 
   type Service = {
     id: string;
@@ -175,13 +175,31 @@
   let theme = $state<Theme>(((typeof localStorage !== "undefined" && (localStorage.getItem("kolibri:theme") as Theme)) || "dark"));
   let faviconFailed = $state<Set<string>>(new Set());
 
+  let systemDarkMql: MediaQueryList | null = null;
+  function resolvedTheme(t: Theme): "dark" | "light" {
+    if (t !== "auto") return t;
+    if (typeof window === "undefined") return "dark";
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  function onSystemThemeChange() {
+    if (theme === "auto" && typeof document !== "undefined") {
+      document.documentElement.dataset.theme = resolvedTheme("auto");
+    }
+  }
+
   function applyTheme(t: Theme) {
     theme = t;
     if (typeof document !== "undefined") {
-      document.documentElement.dataset.theme = t;
+      document.documentElement.dataset.theme = resolvedTheme(t);
     }
     if (typeof localStorage !== "undefined") {
       localStorage.setItem("kolibri:theme", t);
+    }
+    if (typeof window !== "undefined") {
+      if (!systemDarkMql) {
+        systemDarkMql = window.matchMedia("(prefers-color-scheme: dark)");
+        systemDarkMql.addEventListener("change", onSystemThemeChange);
+      }
     }
   }
   let unlisteners: UnlistenFn[] = [];
@@ -413,6 +431,23 @@
   function cancelEdit() {
     editingId = null;
     mode = "settings";
+  }
+
+  let clearMsg = $state("");
+  async function clearSession(label: string) {
+    if (!editingId) return;
+    const svc = services.find(s => s.id === editingId);
+    if (!svc) return;
+    const shared = services.filter(s => s.id !== svc.id && hostOf(s.url) === hostOf(svc.url) && (s.session_slot ?? 0) === (svc.session_slot ?? 0));
+    const extra = shared.length ? `\n\nTambién afecta: ${shared.map(s => s.name).join(", ")} (comparten sesión).` : "";
+    if (!confirm(`${label} de "${svc.name}"?${extra}`)) return;
+    try {
+      await invoke("clear_service_session", { id: editingId });
+      clearMsg = "Listo";
+      setTimeout(() => (clearMsg = ""), 2000);
+    } catch (e) {
+      clearMsg = String(e);
+    }
   }
 
   async function renameService(s: Service, name: string) {
@@ -711,6 +746,7 @@
       <span class="seg-label">Tema</span>
       <button class="seg" class:on={theme === "dark"} onclick={() => applyTheme("dark")}>Oscuro</button>
       <button class="seg" class:on={theme === "light"} onclick={() => applyTheme("light")}>Claro</button>
+      <button class="seg" class:on={theme === "auto"} onclick={() => applyTheme("auto")} title="Seguir tema del sistema">Auto</button>
       <span class="sep"></span>
       <span class="seg-label">Servicios</span>
       {#each services as s (s.id)}
@@ -778,6 +814,10 @@
         Mantener viva en segundo plano
       </label>
       <button type="submit" class="custom-go">Guardar</button>
+      <span class="sep"></span>
+      <button type="button" class="seg" data-no-drag onclick={() => clearSession("Limpiar cookies y cache")} title="Borra cookies/cache; mantiene el servicio en la lista">Limpiar cookies</button>
+      <button type="button" class="seg" data-no-drag onclick={() => clearSession("Cerrar sesión")} title="Cierra sesión borrando cookies; el servicio queda en la lista">Cerrar sesión</button>
+      {#if clearMsg}<span class="kbd-item">{clearMsg}</span>{/if}
     </form>
   {:else if mode === "reorder"}
     <button class="add cancel" onclick={() => (mode = "settings")} title="Volver">×</button>

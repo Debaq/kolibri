@@ -140,3 +140,70 @@ pub async fn clear_favicon_cache<R: Runtime>(app: AppHandle<R>) -> Result<(), St
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_mime_png() {
+        assert_eq!(detect_mime(b"\x89PNG\r\n\x1a\nrest"), "image/png");
+    }
+
+    #[test]
+    fn detect_mime_gif() {
+        assert_eq!(detect_mime(b"GIF89a..."), "image/gif");
+    }
+
+    #[test]
+    fn detect_mime_jpeg() {
+        assert_eq!(detect_mime(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]), "image/jpeg");
+    }
+
+    #[test]
+    fn detect_mime_webp() {
+        let mut v = b"RIFF\x00\x00\x00\x00WEBP".to_vec();
+        v.extend_from_slice(b"VP8 ");
+        assert_eq!(detect_mime(&v), "image/webp");
+    }
+
+    #[test]
+    fn detect_mime_svg() {
+        assert_eq!(detect_mime(b"<?xml ?><svg xmlns='...'></svg>"), "image/svg+xml");
+    }
+
+    #[test]
+    fn detect_mime_fallback_ico() {
+        assert_eq!(detect_mime(&[0, 0, 1, 0, 1, 0, 16, 16]), "image/x-icon");
+    }
+
+    #[test]
+    fn looks_valid_rejects_too_small() {
+        assert!(!looks_valid(b"short"));
+    }
+
+    #[test]
+    fn looks_valid_rejects_html() {
+        assert!(!looks_valid(b"<!doctype html><html><head></head></html>"));
+        assert!(!looks_valid(b"<HTML><body>error page </body></HTML>"));
+    }
+
+    #[test]
+    fn looks_valid_accepts_png_bytes() {
+        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
+        v.extend_from_slice(&[0u8; 32]);
+        assert!(looks_valid(&v));
+    }
+
+    #[test]
+    fn safe_name_replaces_unsafe() {
+        assert_eq!(safe_name("web.whatsapp.com"), "web.whatsapp.com");
+        assert_eq!(safe_name("foo:8080"), "foo_8080");
+    }
+
+    #[test]
+    fn host_from_extracts() {
+        assert_eq!(host_from("https://web.whatsapp.com/x"), Some("web.whatsapp.com".to_string()));
+        assert_eq!(host_from("not-a-url"), None);
+    }
+}
