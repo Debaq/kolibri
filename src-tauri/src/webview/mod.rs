@@ -73,11 +73,18 @@ pub fn relayout<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[tauri::command]
 pub fn switch_service<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> Result<(), String> {
-    {
+    let svc_to_mount = {
         let state: State<AppState> = app.state();
         let mut g = state.inner.lock().expect("webview state mutex poisoned");
         g.active_id = id.clone();
         crate::services::save(&app, &g).map_err(|e| e.to_string())?;
+        id.as_deref()
+            .and_then(|sid| g.services.iter().find(|s| s.id == sid).cloned())
+    };
+    // Lazy mount: si la pestaña destino no está montada (recién arrancada o
+    // suspendida), la montamos ahora. ensure_mounted ya es idempotente.
+    if let Some(svc) = svc_to_mount {
+        ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
     }
     set_active(&app, id.as_deref()).map_err(|e| e.to_string())
 }

@@ -3,7 +3,7 @@ use tauri::{
     webview::WebviewBuilder, AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl,
 };
 
-use crate::services::{data_dir_for, Service};
+use crate::services::{data_dir_for_service, Service};
 
 use super::{label_for, scripts, BAR_HEIGHT};
 
@@ -65,7 +65,7 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
         .url
         .parse()
         .map_err(|e: url::ParseError| tauri::Error::Anyhow(anyhow::anyhow!(e)))?;
-    let data_dir = data_dir_for(app, &svc.id)?;
+    let data_dir = data_dir_for_service(app, svc)?;
 
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .data_directory(data_dir)
