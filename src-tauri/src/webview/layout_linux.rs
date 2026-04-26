@@ -66,7 +66,15 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if let Some(main_wv) = app.get_webview_window("main") {
         let app_for_capture = app.clone();
         let _ = main_wv.with_webview(move |pw| {
+            use webkit2gtk::WebViewExt;
             let view = pw.inner();
+
+            // Nota: intentamos deshabilitar PSON con set_property runtime y
+            // panicó porque `process-swap-on-cross-site-navigation-enabled` es
+            // CONSTRUCT_ONLY en WebKit. Solo se puede setear via WebContext::builder().
+            // wry no expone ese punto → habría que vendorear wry para llegar a
+            // 1 WebProcess real.
+
             if let Some(handle) = app_for_capture.try_state::<BarWebViewHandle>() {
                 let mut g = handle.inner().0.lock().expect("BarWebViewHandle mutex poisoned");
                 *g = Some(GtkMainThreadView(view));
