@@ -1,6 +1,6 @@
 {
   "name": "kolibri",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Cliente liviano multi-servicio (WhatsApp, Gmail, Outlook) con Tauri + Rust + Svelte",
   "type": "module",
   "scripts": {

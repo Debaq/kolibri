@@ -73,6 +73,7 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 - [ ] Empaquetado `.deb`, `.rpm`, `.AppImage`, `.msi`
 - [ ] CI GitHub Actions: build cross-platform + release on tag
 - [ ] README usuario final
+- [x] **Auto-instalar `.desktop` + iconos en Linux**: `desktop_install.rs` escribe `~/.local/share/applications/kolibri.desktop` (o `$XDG_DATA_HOME/...`) y copia iconos hicolor 32/64/128/256/512. Idempotente via marker `install.version` (re-instala si cambia version o exec path). `.desktop` incluye `StartupWMClass=kolibri`; `gtk::glib::set_prgname("kolibri")` hace que GTK setee WM_CLASS instance matching → el WM asocia ventana al icono. Refresca caches via `update-desktop-database` y `gtk-update-icon-cache` (best-effort). Boton "Reinstalar entrada de menu" en Settings (cmd `reinstall_desktop_entry`).
 
 ## Datos / privacidad
 
@@ -80,6 +81,13 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 - [ ] **Modo invitado**: sesión efímera por servicio (no persiste cookies)
 - [x] **Limpiar cookies/cache** desde Settings, por servicio (cmd `clear_service_session`, botón en edit modal)
 - [x] **Logout** un servicio sin perderlo de la lista (mismo cmd, botón "Cerrar sesión" en edit modal)
+
+## Release 0.1.3 (2026-04-26)
+
+- [x] **WhatsApp graba audio**: en `mount_child` (Linux), via `with_webview`, habilitar `enable_media_stream` / `enable_mediasource` / `enable_encrypted_media`, y conectar `permission-request` para auto-grant `UserMediaPermissionRequest` y `NotificationPermissionRequest`. Resto deny.
+- [x] **Drag-and-drop de archivos** a WhatsApp/Slack: bridge GTK→JS en `scripts.rs::install_filedrop_bridge`. Intercepta signal `drag-data-received` (target text/uri-list), lee bytes (cap 64 MiB), base64-encodea, sintetiza `dragenter/dragover/drop` con `DataTransfer` poblado en el elemento bajo el cursor.
+- [x] **Catalogo reducido**: solo WhatsApp, Gmail, Outlook hasta validar el resto con engine unificado.
+- [ ] **Probar manana 2026-04-27**: WhatsApp mic, DnD imagenes/PDF/videos cortos, regresiones en Gmail/Outlook.
 
 ## Deuda técnica detectada (review 2026-04-25)
 

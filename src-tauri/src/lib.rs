@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod desktop_install;
 mod favicons;
 mod services;
 mod sysmem;
@@ -112,6 +114,18 @@ fn emit_unread<R: tauri::Runtime>(
     Ok(())
 }
 
+#[tauri::command]
+fn reinstall_desktop_entry<R: tauri::Runtime>(_app: tauri::AppHandle<R>) -> Result<bool, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return desktop_install::install(true).map_err(|e| e.to_string());
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(false)
+    }
+}
+
 fn toggle_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let Some(win) = app.get_webview_window("main") else {
         return;
@@ -160,6 +174,7 @@ pub fn run() {
             services::set_keep_alive,
             services::suspend_service,
             services::clear_service_session,
+            reinstall_desktop_entry,
             webview::switch_service,
             webview::get_active_service,
             webview::reload_service,
@@ -175,6 +190,10 @@ pub fn run() {
             update::check_update,
         ])
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            {
+                let _ = desktop_install::install(false);
+            }
             tray::init(app.handle())?;
             webview::setup_main_window(app.handle())?;
             services::load_from_disk(app.handle())?;

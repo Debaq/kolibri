@@ -32,7 +32,13 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // negro sobre fondo negro.
     if let Ok(gtk_win) = window.gtk_window() {
         gtk_win.set_widget_name("kolibri-main");
+        gtk_win.set_role("kolibri-main");
     }
+    // GTK deriva WM_CLASS instance del prgname, asi que con prgname=kolibri
+    // el WM matchea contra `StartupWMClass=kolibri` del .desktop instalado y
+    // muestra el icono correcto. El application name aparece en taskbar.
+    gtk::glib::set_prgname(Some("kolibri"));
+    gtk::glib::set_application_name("Kolibri");
     let css = "#kolibri-main, #kolibri-main box, #kolibri-main .background { background-color: #1a1a1a; border: none; box-shadow: none; }";
     let provider = gtk::CssProvider::new();
     if provider.load_from_data(css.as_bytes()).is_ok() {

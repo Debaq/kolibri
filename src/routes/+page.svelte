@@ -433,6 +433,17 @@
     mode = "settings";
   }
 
+  let desktopMsg = $state("");
+  async function reinstallDesktop() {
+    try {
+      const ok = await invoke<boolean>("reinstall_desktop_entry");
+      desktopMsg = ok ? "Reinstalado" : "No aplica";
+    } catch (e) {
+      desktopMsg = "Error: " + e;
+    }
+    setTimeout(() => (desktopMsg = ""), 2500);
+  }
+
   let clearMsg = $state("");
   async function clearSession(label: string) {
     if (!editingId) return;
@@ -770,6 +781,9 @@
       <span class="seg-label">Sistema</span>
       <button class="seg" class:on={autostartOn} onclick={toggleAutostart} title="Iniciar con sesión">
         Autostart {autostartOn ? "ON" : "OFF"}
+      </button>
+      <button class="seg" onclick={reinstallDesktop} title="Reinstalar entrada en menu/launcher (Linux)">
+        {desktopMsg || "Reinstalar entrada de menu"}
       </button>
       <span class="sep"></span>
       <span class="seg-label">Atajo global</span>
