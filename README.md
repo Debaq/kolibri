@@ -93,6 +93,16 @@ Push de un tag `v*` (ej `v0.1.0`) dispara el workflow `.github/workflows/release
 
 Para publicarlo, edita el draft en GitHub y dale "Publish".
 
+## Notas de upgrade
+
+- **0.1.3 — sesiones por host:** se cambió el almacenamiento de sesiones para que
+  servicios con distinto host compartan un único proceso de WebKit/WebView (antes
+  era un proceso por servicio, lo que disparaba el uso de RAM). Al actualizar, las
+  sesiones de la versión anterior se borran automáticamente y la app muestra un
+  aviso pidiendo volver a iniciar sesión en cada servicio. También se agregó
+  auto-suspend de pestañas inactivas (configurable en ajustes) y un toggle
+  "Mantener viva en segundo plano" por servicio para apps con notificaciones.
+
 ## Roadmap
 
 Ver [ROADMAP.md](ROADMAP.md).

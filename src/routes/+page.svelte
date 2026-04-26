@@ -15,6 +15,8 @@
     url: string;
     icon: string | null;
     color: string | null;
+    session_slot?: number;
+    keep_alive?: boolean;
   };
 
   type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder";
@@ -32,6 +34,7 @@
   let editUrl = $state("");
   let editColor = $state("");
   let editIcon = $state("");
+  let editKeepAlive = $state(false);
   let loadingIds = $state<Set<string>>(new Set());
   let unread = $state<Record<string, number>>({});
   let unreadTotal = $state(0);
@@ -46,6 +49,81 @@
   let updateInfo = $state<UpdateInfo | null>(null);
   let updateTimer: ReturnType<typeof setInterval> | null = null;
   const UPDATE_DISMISS_KEY = "kolibri:update_dismissed";
+
+  // Auto-suspend de pestañas inactivas
+  let suspendMinutes = $state<number>(5);
+  let suspendDraft = $state<number>(5);
+  let suspendMsg = $state("");
+  // Por servicio: timer pendiente para llamar suspend_service
+  const suspendTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Servicios actualmente "suspendidos" en el front (para mostrar UI o evitar dobles).
+  let suspendedIds = $state<Set<string>>(new Set());
+  // Aviso de migración de sesiones
+  let migrationNotice = $state(false);
+
+  function clearSuspendTimer(id: string) {
+    const t = suspendTimers.get(id);
+    if (t) {
+      clearTimeout(t);
+      suspendTimers.delete(id);
+    }
+  }
+
+  function scheduleSuspend(id: string) {
+    clearSuspendTimer(id);
+    if (!suspendMinutes || suspendMinutes <= 0) return;
+    const svc = services.find((s) => s.id === id);
+    if (!svc || svc.keep_alive) return;
+    const ms = suspendMinutes * 60 * 1000;
+    const t = setTimeout(async () => {
+      try {
+        const ok = await invoke<boolean>("suspend_service", { id });
+        if (ok) {
+          const next = new Set(suspendedIds);
+          next.add(id);
+          suspendedIds = next;
+        }
+      } catch {}
+      suspendTimers.delete(id);
+    }, ms);
+    suspendTimers.set(id, t);
+  }
+
+  function rescheduleAllSuspends() {
+    // Limpia y reprograma todos los timers para no-activos sin keep_alive.
+    for (const id of Array.from(suspendTimers.keys())) clearSuspendTimer(id);
+    if (!suspendMinutes || suspendMinutes <= 0) return;
+    for (const s of services) {
+      if (s.id === activeId) continue;
+      if (s.keep_alive) continue;
+      if (suspendedIds.has(s.id)) continue;
+      scheduleSuspend(s.id);
+    }
+  }
+
+  async function loadSuspendMinutes() {
+    try {
+      suspendMinutes = await invoke<number>("get_inactive_suspend_minutes");
+      suspendDraft = suspendMinutes;
+    } catch {}
+  }
+
+  async function saveSuspendMinutes() {
+    const n = Math.max(0, Math.floor(Number(suspendDraft) || 0));
+    try {
+      await invoke("set_inactive_suspend_minutes", { minutes: n });
+      suspendMinutes = n;
+      suspendMsg = "OK";
+      rescheduleAllSuspends();
+    } catch (e) {
+      suspendMsg = "Error: " + e;
+    }
+    setTimeout(() => (suspendMsg = ""), 2000);
+  }
+
+  function dismissMigrationNotice() {
+    migrationNotice = false;
+  }
 
   async function checkUpdate() {
     try {
@@ -157,6 +235,7 @@
   async function refresh() {
     services = await invoke<Service[]>("list_services");
     activeId = await invoke<string | null>("get_active_service");
+    rescheduleAllSuspends();
   }
 
   async function addFromTemplate(t: ServiceTemplate) {
@@ -192,8 +271,19 @@
   }
 
   async function selectService(id: string) {
+    // Si estaba marcada como suspendida en el front, ya no lo está (backend la remontará).
+    if (suspendedIds.has(id)) {
+      const next = new Set(suspendedIds);
+      next.delete(id);
+      suspendedIds = next;
+    }
+    // Pausar timer de la pestaña que estamos por activar (no se debe suspender mientras está activa).
+    clearSuspendTimer(id);
+    // Si había una pestaña activa anterior, programar su suspensión.
+    const prev = activeId;
     await invoke("switch_service", { id });
     activeId = id;
+    if (prev && prev !== id) scheduleSuspend(prev);
   }
 
   async function showHome() {
@@ -301,6 +391,7 @@
     editUrl = s.url;
     editColor = s.color ?? "";
     editIcon = s.icon ?? "";
+    editKeepAlive = !!s.keep_alive;
     mode = "edit";
   }
 
@@ -312,6 +403,7 @@
       url: editUrl.trim(),
       icon: editIcon,
       color: editColor,
+      keepAlive: editKeepAlive,
     });
     editingId = null;
     mode = "settings";
@@ -332,6 +424,7 @@
       url: s.url,
       icon: s.icon ?? "",
       color: s.color ?? "",
+      keepAlive: s.keep_alive ?? false,
     });
     await refresh();
   }
@@ -432,6 +525,12 @@
     try {
       await loadShortcut();
     } catch {}
+    try {
+      await loadSuspendMinutes();
+    } catch {}
+    unlisteners.push(await listen("kolibri:sessions_migrated", () => {
+      migrationNotice = true;
+    }));
     unlisteners.push(await listen("kolibri:services_changed", refresh));
     unlisteners.push(await listen("kolibri:active_changed", refresh));
     unlisteners.push(
@@ -465,6 +564,7 @@
     window.removeEventListener("keydown", onKey);
     if (memTimer) clearInterval(memTimer);
     if (updateTimer) clearInterval(updateTimer);
+    for (const id of Array.from(suspendTimers.keys())) clearSuspendTimer(id);
   });
 </script>
 
@@ -649,6 +749,20 @@
       <button class="seg" onclick={saveShortcut}>Guardar</button>
       {#if shortcutMsg}<span class="kbd-item">{shortcutMsg}</span>{/if}
       <span class="sep"></span>
+      <span class="seg-label" title="Suspende pestañas en segundo plano para liberar RAM. 0 = nunca.">Suspender inactivas (min)</span>
+      <input
+        type="number"
+        class="kbd-input"
+        min="0"
+        max="1440"
+        bind:value={suspendDraft}
+        data-no-drag
+        title="Minutos de inactividad para suspender (0 = nunca)"
+        style="width: 70px"
+      />
+      <button class="seg" onclick={saveSuspendMinutes}>Guardar</button>
+      {#if suspendMsg}<span class="kbd-item">{suspendMsg}</span>{/if}
+      <span class="sep"></span>
       <button class="seg" onclick={() => (mode = "shortcuts")}>Atajos bar</button>
     </div>
   {:else if mode === "edit"}
@@ -659,6 +773,10 @@
       <input type="text" placeholder="Inicial/emoji" bind:value={editIcon} data-no-drag class="icon-input" maxlength="2" title="Icono custom (1-2 chars/emoji)" />
       <input type="color" bind:value={editColor} data-no-drag class="color-input" title="Color" />
       <button type="button" class="link-btn" onclick={() => (editColor = "")}>limpiar</button>
+      <label class="kbd-item" data-no-drag title="Si está activo, no se suspende por inactividad (útil para apps con notificaciones en background)">
+        <input type="checkbox" bind:checked={editKeepAlive} data-no-drag />
+        Mantener viva en segundo plano
+      </label>
       <button type="submit" class="custom-go">Guardar</button>
     </form>
   {:else if mode === "reorder"}
@@ -730,6 +848,25 @@
     <button class="ctrl close" onclick={closeWin} title="Cerrar">×</button>
   </div>
 </div>
+
+{#if migrationNotice}
+  <div class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="migr-title">
+    <div class="modal">
+      <h2 id="migr-title">Sesiones reseteadas</h2>
+      <p>
+        Esta versión cambia cómo se almacenan las sesiones para reducir el uso de RAM.
+        Servicios distintos del mismo origen ahora comparten un único proceso de WebKit.
+      </p>
+      <p>
+        Como efecto secundario, las sesiones anteriores fueron eliminadas. Tendrás que volver
+        a iniciar sesión en cada servicio.
+      </p>
+      <div class="modal-actions">
+        <button class="custom-go" onclick={dismissMigrationNotice}>Entendido</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <main class="welcome">
   {#if services.length === 0}
@@ -1144,5 +1281,38 @@
     font-size: 11px;
     padding: 2px 7px;
     align-self: center;
+  }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+  .modal {
+    background: var(--kolibri-bar, #222);
+    color: var(--kolibri-fg, #eee);
+    border: 1px solid var(--kolibri-bar-border, #2c2c2c);
+    border-radius: 10px;
+    padding: 22px 26px;
+    max-width: 460px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+  .modal h2 {
+    margin: 0 0 12px 0;
+    font-size: 18px;
+  }
+  .modal p {
+    margin: 6px 0;
+    font-size: 13px;
+    line-height: 1.45;
+    opacity: 0.92;
+  }
+  .modal-actions {
+    margin-top: 16px;
+    display: flex;
+    justify-content: flex-end;
   }
 </style>
