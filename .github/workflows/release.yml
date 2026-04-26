@@ -15,7 +15,7 @@ jobs:
       matrix:
         include:
           - platform: 'ubuntu-22.04'
-            args: ''
+            args: '--bundles appimage'
           - platform: 'windows-latest'
             args: ''
 
@@ -74,7 +74,7 @@ jobs:
 
             Descargar binario según OS abajo. Ver [README](https://github.com/Debaq/kolibri#instalación) para instrucciones.
 
-            **Linux**: AppImage (portable) / `.deb` / `.rpm`
+            **Linux**: AppImage (portable, corre en cualquier distro)
             **Windows**: `.msi` / `.exe` (NSIS)
           releaseDraft: false
           prerelease: false
