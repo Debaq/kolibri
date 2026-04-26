@@ -34,13 +34,13 @@ const CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHT
 
 fn config_path<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<PathBuf> {
     let dir = app.path().app_data_dir()?;
-    fs::create_dir_all(&dir).ok();
+    fs::create_dir_all(&dir)?;
     Ok(dir.join("services.json"))
 }
 
 pub fn data_dir_for<R: Runtime>(app: &AppHandle<R>, id: &str) -> tauri::Result<PathBuf> {
     let dir = app.path().app_data_dir()?.join("sessions").join(id);
-    fs::create_dir_all(&dir).ok();
+    fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
@@ -61,10 +61,10 @@ pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let parsed: PersistedState = serde_json::from_str(&raw).unwrap_or_default();
     let state: State<AppState> = app.state();
     {
-        let mut guard = state.inner.lock().unwrap();
+        let mut guard = state.inner.lock().expect("AppState mutex poisoned");
         *guard = parsed;
     }
-    let snapshot = state.inner.lock().unwrap().clone();
+    let snapshot = state.inner.lock().expect("AppState mutex poisoned").clone();
     for svc in snapshot.services.iter() {
         let _ = webview::ensure_mounted(app, svc);
     }
@@ -74,7 +74,7 @@ pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 
 #[tauri::command]
 pub fn list_services(state: State<'_, AppState>) -> Vec<Service> {
-    state.inner.lock().unwrap().services.clone()
+    state.inner.lock().expect("AppState mutex poisoned").services.clone()
 }
 
 #[tauri::command]
@@ -86,13 +86,7 @@ pub fn add_service<R: Runtime>(
     icon: Option<String>,
     color: Option<String>,
 ) -> Result<Service, String> {
-    let id = format!(
-        "{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
+    let id = uuid::Uuid::new_v4().to_string();
     let svc = Service {
         id: id.clone(),
         name,
@@ -102,7 +96,7 @@ pub fn add_service<R: Runtime>(
         user_agent: Some(CHROME_UA.to_string()),
     };
     {
-        let mut g = state.inner.lock().unwrap();
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
         g.services.push(svc.clone());
         save(&app, &g).map_err(|e| e.to_string())?;
     }
@@ -125,7 +119,7 @@ pub fn update_service<R: Runtime>(
     let url_changed;
     let was_active;
     {
-        let mut g = state.inner.lock().unwrap();
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
         let svc = g
             .services
             .iter_mut()
@@ -139,10 +133,14 @@ pub fn update_service<R: Runtime>(
             svc.url = u;
         }
         if let Some(i) = icon {
-            svc.icon = if i.is_empty() { None } else { Some(i) };
+            if !i.is_empty() {
+                svc.icon = Some(i);
+            }
         }
         if let Some(c) = color {
-            svc.color = if c.is_empty() { None } else { Some(c) };
+            if !c.is_empty() {
+                svc.color = Some(c);
+            }
         }
         updated = svc.clone();
         was_active = g.active_id.as_deref() == Some(&id);
@@ -160,12 +158,52 @@ pub fn update_service<R: Runtime>(
 }
 
 #[tauri::command]
+pub fn clear_service_icon<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    {
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
+        let svc = g
+            .services
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| "service not found".to_string())?;
+        svc.icon = None;
+        save(&app, &g).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_service_color<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    {
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
+        let svc = g
+            .services
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| "service not found".to_string())?;
+        svc.color = None;
+        save(&app, &g).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(())
+}
+
+#[tauri::command]
 pub fn reorder_services<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
     ids: Vec<String>,
 ) -> Result<(), String> {
-    let mut g = state.inner.lock().unwrap();
+    let mut g = state.inner.lock().expect("AppState mutex poisoned");
     let mut by_id: std::collections::HashMap<String, Service> =
         g.services.drain(..).map(|s| (s.id.clone(), s)).collect();
     let mut new_order: Vec<Service> = Vec::with_capacity(ids.len() + by_id.len());
@@ -192,7 +230,7 @@ pub fn remove_service<R: Runtime>(
 ) -> Result<(), String> {
     let was_active;
     {
-        let mut g = state.inner.lock().unwrap();
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
         g.services.retain(|s| s.id != id);
         was_active = g.active_id.as_deref() == Some(&id);
         if was_active {

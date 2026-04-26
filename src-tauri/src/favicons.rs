@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+const CACHE_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 use base64::Engine;
 use tauri::{AppHandle, Manager, Runtime};
@@ -45,7 +47,7 @@ fn detect_mime(bytes: &[u8]) -> &'static str {
 }
 
 fn looks_valid(bytes: &[u8]) -> bool {
-    if bytes.len() < 64 {
+    if bytes.len() < 16 {
         return false;
     }
     let head = &bytes[..bytes.len().min(256)];
@@ -54,6 +56,19 @@ fn looks_valid(bytes: &[u8]) -> bool {
         return false;
     }
     true
+}
+
+fn cache_fresh(path: &std::path::Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    SystemTime::now()
+        .duration_since(modified)
+        .map(|age| age < CACHE_TTL)
+        .unwrap_or(false)
 }
 
 async fn fetch_one(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
@@ -78,7 +93,7 @@ pub async fn get_favicon<R: Runtime>(
     let dir = favicons_dir(&app).map_err(|e| e.to_string())?;
     let cache_path = dir.join(format!("{}.bin", safe_name(&host)));
 
-    let bytes = if cache_path.exists() {
+    let bytes = if cache_path.exists() && cache_fresh(&cache_path) {
         fs::read(&cache_path).map_err(|e| e.to_string())?
     } else {
         let client = reqwest::Client::builder()
@@ -98,7 +113,16 @@ pub async fn get_favicon<R: Runtime>(
                 break;
             }
         }
-        let bytes = found.ok_or_else(|| "no favicon found".to_string())?;
+        let bytes = match found {
+            Some(b) => b,
+            None => {
+                if cache_path.exists() {
+                    fs::read(&cache_path).map_err(|e| e.to_string())?
+                } else {
+                    return Err("no favicon found".to_string());
+                }
+            }
+        };
         fs::write(&cache_path, &bytes).ok();
         bytes
     };

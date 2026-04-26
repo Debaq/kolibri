@@ -4,7 +4,7 @@ mod tray;
 mod webview;
 
 use services::AppState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use tauri::{Manager, Emitter};
 use tauri_plugin_autostart::MacosLauncher;
@@ -14,6 +14,7 @@ use webview::MountedRegistry;
 #[derive(Default)]
 pub struct UnreadState {
     pub counts: Mutex<HashMap<String, u32>>,
+    pub seeded: Mutex<HashSet<String>>,
 }
 
 pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Alt+K";
@@ -23,7 +24,7 @@ fn get_toggle_shortcut(state: tauri::State<'_, AppState>) -> String {
     state
         .inner
         .lock()
-        .unwrap()
+        .expect("state mutex poisoned")
         .toggle_shortcut
         .clone()
         .unwrap_or_else(|| DEFAULT_TOGGLE_SHORTCUT.to_string())
@@ -36,7 +37,7 @@ fn set_toggle_shortcut<R: tauri::Runtime>(
     accelerator: String,
 ) -> Result<(), String> {
     let prev = {
-        let mut g = state.inner.lock().unwrap();
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
         let prev = g
             .toggle_shortcut
             .clone()
@@ -59,8 +60,13 @@ fn emit_unread<R: tauri::Runtime>(
     service_id: String,
     count: u32,
 ) -> Result<(), String> {
+    let is_seed = state
+        .seeded
+        .lock()
+        .expect("UnreadState seeded mutex poisoned")
+        .insert(service_id.clone());
     let (prev, total, name) = {
-        let mut g = state.counts.lock().unwrap();
+        let mut g = state.counts.lock().expect("UnreadState mutex poisoned");
         let prev = g.get(&service_id).copied().unwrap_or(0);
         if count == 0 {
             g.remove(&service_id);
@@ -71,7 +77,7 @@ fn emit_unread<R: tauri::Runtime>(
         let name = svc_state
             .inner
             .lock()
-            .unwrap()
+            .expect("AppState mutex poisoned")
             .services
             .iter()
             .find(|s| s.id == service_id)
@@ -91,7 +97,7 @@ fn emit_unread<R: tauri::Runtime>(
         };
         let _ = tray.set_tooltip(Some(&tip));
     }
-    if count > prev && !name.is_empty() {
+    if !is_seed && count > prev && !name.is_empty() {
         use tauri_plugin_notification::NotificationExt;
         let body = format!("{} mensajes sin leer", count);
         let _ = app
@@ -144,6 +150,8 @@ pub fn run() {
             services::remove_service,
             services::reorder_services,
             services::update_service,
+            services::clear_service_icon,
+            services::clear_service_color,
             webview::switch_service,
             webview::get_active_service,
             webview::reload_service,
@@ -165,7 +173,7 @@ pub fn run() {
                 .state::<AppState>()
                 .inner
                 .lock()
-                .unwrap()
+                .expect("AppState mutex poisoned")
                 .toggle_shortcut
                 .clone()
                 .unwrap_or_else(|| DEFAULT_TOGGLE_SHORTCUT.to_string());

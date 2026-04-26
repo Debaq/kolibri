@@ -1,8 +1,11 @@
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime,
 };
+
+const FALLBACK_ICON: &[u8] = include_bytes!("../icons/32x32.png");
 
 pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Mostrar Kolibri", true, None::<&str>)?;
@@ -10,9 +13,14 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 
+    let icon = match app.default_window_icon().cloned() {
+        Some(i) => i,
+        None => Image::from_bytes(FALLBACK_ICON)?,
+    };
+
     let _tray = TrayIconBuilder::with_id("kolibri-tray")
         .tooltip("Kolibri")
-        .icon(app.default_window_icon().cloned().unwrap())
+        .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {

@@ -38,11 +38,11 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 pub fn ensure_mounted<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Result<()> {
     let label = label_for(&svc.id);
     let registry = app.state::<MountedRegistry>();
-    if registry.inner.lock().unwrap().iter().any(|l| l == &label) {
+    if registry.inner.lock().expect("webview state mutex poisoned").iter().any(|l| l == &label) {
         return Ok(());
     }
     platform::mount_child(app, svc)?;
-    registry.inner.lock().unwrap().push(label);
+    registry.inner.lock().expect("webview state mutex poisoned").push(label);
     Ok(())
 }
 
@@ -50,20 +50,20 @@ pub fn unmount<R: Runtime>(app: &AppHandle<R>, svc_id: &str) -> tauri::Result<()
     let label = label_for(svc_id);
     platform::unmount_child(app, &label)?;
     let registry = app.state::<MountedRegistry>();
-    registry.inner.lock().unwrap().retain(|l| l != &label);
+    registry.inner.lock().expect("webview state mutex poisoned").retain(|l| l != &label);
     Ok(())
 }
 
 pub fn set_active<R: Runtime>(app: &AppHandle<R>, svc_id: Option<&str>) -> tauri::Result<()> {
-    let services = app.state::<AppState>().inner.lock().unwrap().services.clone();
+    let services = app.state::<AppState>().inner.lock().expect("webview state mutex poisoned").services.clone();
     platform::apply_active(app, &services, svc_id)?;
     let _ = app.emit("kolibri:active_changed", svc_id);
     Ok(())
 }
 
 pub fn relayout<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let services = app.state::<AppState>().inner.lock().unwrap().services.clone();
-    let active = app.state::<AppState>().inner.lock().unwrap().active_id.clone();
+    let services = app.state::<AppState>().inner.lock().expect("webview state mutex poisoned").services.clone();
+    let active = app.state::<AppState>().inner.lock().expect("webview state mutex poisoned").active_id.clone();
     platform::apply_active(app, &services, active.as_deref())
 }
 
@@ -73,7 +73,7 @@ pub fn relayout<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 pub fn switch_service<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> Result<(), String> {
     {
         let state: State<AppState> = app.state();
-        let mut g = state.inner.lock().unwrap();
+        let mut g = state.inner.lock().expect("webview state mutex poisoned");
         g.active_id = id.clone();
         crate::services::save(&app, &g).map_err(|e| e.to_string())?;
     }
@@ -82,7 +82,7 @@ pub fn switch_service<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> Resu
 
 #[tauri::command]
 pub fn get_active_service(state: State<'_, AppState>) -> Option<String> {
-    state.inner.lock().unwrap().active_id.clone()
+    state.inner.lock().expect("webview state mutex poisoned").active_id.clone()
 }
 
 #[tauri::command]

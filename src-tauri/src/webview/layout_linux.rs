@@ -28,11 +28,13 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
 
     let vbox = window.default_vbox()?;
+    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+    let bar_px = (BAR_HEIGHT as f64 * scale).round() as i32;
     // El primer child del vbox es el webview principal (Svelte). Lo fijamos a altura BAR_HEIGHT.
     let children = vbox.children();
     if let Some(first) = children.first() {
         vbox.set_child_packing(first, false, true, 0, gtk::PackType::Start);
-        first.set_size_request(-1, BAR_HEIGHT as i32);
+        first.set_size_request(-1, bar_px);
         first.set_hexpand(true);
         first.set_halign(gtk::Align::Fill);
         first.set_valign(gtk::Align::Start);

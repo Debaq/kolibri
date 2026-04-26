@@ -84,15 +84,15 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 
 Backend Rust:
 
-- [ ] **`unwrap()` en todos los `Mutex::lock()`**: PoisonError = panic global. Reemplazar por manejo o al menos `expect()` con mensaje útil. Aplica a `lib.rs`, `services.rs`, `webview/mod.rs`
-- [ ] **`tray.rs:15` `default_window_icon().unwrap()`**: panic si el manifest no define icono. Fallback a icono embebido
-- [ ] **ID por `SystemTime` en ms** (`services.rs:89`): colisión teórica si dos `add_service` caen en el mismo ms. `unwrap_or(0)` además da ID=0 si el reloj falla → colisiones múltiples. Migrar a UUID v4
-- [ ] **`emit_unread` spam al iniciar** (`lib.rs:94`): `prev=0` inicial + primera carga con count>0 dispara notif nativa al abrir la app. Marcar primer tick como "seed" sin notificar
-- [ ] **Favicon cache sin TTL** (`favicons.rs`): si un sitio cambia logo, queda atascado para siempre. Agregar TTL (ej 7 días) o invalidación por `etag`
-- [ ] **`looks_valid` rechaza <64 bytes** (`favicons.rs:48`): un SVG mínimo legítimo se descarta. Bajar umbral o validar por content-type
-- [ ] **`data_dir_for` ignora fallo `create_dir_all`** (`services.rs:37,43`): falla silenciosa si no hay permisos. Propagar error
-- [ ] **`update_service` con `icon: Some("")` borra icono**: API ambigua. Separar en comando `clear_service_icon` o usar `Option<Option<String>>`
-- [ ] **HiDPI**: `set_size_request(-1, 56)` fija barra en px lógicos. En monitores 2x la barra se ve mitad. Multiplicar por `scale_factor()`
+- [x] **`unwrap()` en todos los `Mutex::lock()`**: reemplazado por `expect()` informativo en `lib.rs`, `services.rs`, `webview/mod.rs`
+- [x] **`tray.rs` `default_window_icon().unwrap()`**: fallback a icono embebido (`icons/32x32.png` vía `include_bytes!` + `Image::from_bytes`, feature `image-png`)
+- [x] **ID por `SystemTime` en ms**: migrado a `uuid::Uuid::new_v4()` en `services::add_service`
+- [x] **`emit_unread` spam al iniciar**: primer tick por servicio se marca como seed (HashSet en `UnreadState.seeded`) y no dispara notif nativa
+- [x] **Favicon cache sin TTL**: TTL 7 días vía mtime; si fetch falla y existe cache stale, se reusa
+- [x] **`looks_valid` rechaza <64 bytes**: umbral bajado a 16 bytes; sigue descartando HTML
+- [x] **`data_dir_for` ignora fallo `create_dir_all`**: ahora propaga error con `?`
+- [x] **`update_service` con `icon: Some("")` borra icono**: ahora `Some("")` se ignora; comandos `clear_service_icon` y `clear_service_color` separados para borrar
+- [x] **HiDPI**: bar multiplica `BAR_HEIGHT` por `scale_factor()` en `layout_linux`
 
 Frontend:
 
