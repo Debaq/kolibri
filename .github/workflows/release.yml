@@ -76,6 +76,6 @@ jobs:
 
             **Linux**: AppImage (portable) / `.deb` / `.rpm`
             **Windows**: `.msi` / `.exe` (NSIS)
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
