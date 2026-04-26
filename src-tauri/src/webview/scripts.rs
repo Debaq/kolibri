@@ -3,6 +3,9 @@ use tauri::{
     Emitter, Manager, Runtime,
 };
 
+#[cfg(target_os = "linux")]
+use webkit2gtk::WebView;
+
 pub const NAV_SPOOF: &str = r#"
 (function () {
   if (window.__KOLIBRI_NAV__) return;
@@ -80,4 +83,150 @@ pub fn apply_common<R: Runtime>(
             .emit("kolibri:page_load", (id.clone(), phase));
     });
     builder
+}
+
+#[cfg(target_os = "linux")]
+pub fn install_filedrop_bridge(view: &WebView) {
+    use base64::Engine as _;
+    use gtk::gdk::DragContext;
+    use gtk::prelude::WidgetExt;
+    use gtk::SelectionData;
+    use webkit2gtk::{gio, WebViewExt};
+
+    view.connect_drag_data_received(
+        move |w: &WebView, _ctx: &DragContext, x: i32, y: i32, data: &SelectionData, info: u32, _time: u32| {
+        // info==2 corresponde a target text/uri-list (lista de archivos).
+        if info != 2 {
+            return;
+        }
+        let uris = data.uris();
+        if uris.is_empty() {
+            return;
+        }
+
+        let mut entries: Vec<String> = Vec::with_capacity(uris.len());
+        for uri in uris.iter() {
+            let s: &str = uri.as_str();
+            let path = match s.strip_prefix("file://") {
+                Some(p) => percent_decode(p),
+                None => continue,
+            };
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            // Cap por archivo: 64 MiB. Evita base64-encodear videos enormes
+            // y colgar el GTK main thread.
+            if bytes.len() > 64 * 1024 * 1024 {
+                continue;
+            }
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".to_string());
+            let mime = guess_mime(&name);
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            entries.push(format!(
+                "{{name:{n},type:{t},bytes:'{b}'}}",
+                n = json_str(&name),
+                t = json_str(&mime),
+                b = b64
+            ));
+        }
+        if entries.is_empty() {
+            return;
+        }
+
+        let js = format!(
+            r#"(function(){{
+  try {{
+    var files=[{arr}];
+    function b64(s){{var bin=atob(s);var u=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u;}}
+    var dt=new DataTransfer();
+    files.forEach(function(f){{
+      try {{ dt.items.add(new File([b64(f.bytes)], f.name, {{type:f.type}})); }} catch(e) {{}}
+    }});
+    var x={x}, y={y};
+    var el=document.elementFromPoint(x,y)||document.body;
+    function fire(t){{
+      try {{
+        el.dispatchEvent(new DragEvent(t,{{bubbles:true,cancelable:true,dataTransfer:dt,clientX:x,clientY:y}}));
+      }} catch(e) {{
+        var ev=document.createEvent('Event'); ev.initEvent(t,true,true); ev.dataTransfer=dt; ev.clientX=x; ev.clientY=y;
+        el.dispatchEvent(ev);
+      }}
+    }}
+    fire('dragenter'); fire('dragover'); fire('drop');
+  }} catch(e) {{}}
+}})();"#,
+            arr = entries.join(","),
+            x = x,
+            y = y
+        );
+
+        w.evaluate_javascript(&js, None, None, None::<&gio::Cancellable>, |_| {});
+    },
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+            if let Some(h) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(h);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(target_os = "linux")]
+fn guess_mime(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "ogg" => "audio/ogg",
+        "wav" => "audio/wav",
+        "txt" | "md" => "text/plain",
+        "json" => "application/json",
+        "zip" => "application/zip",
+        _ => "application/octet-stream",
+    }
 }

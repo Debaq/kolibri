@@ -210,6 +210,13 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
                 }
                 true
             });
+
+            // Bridge de drag-and-drop GTK → JS. WebKitGTK no genera File objects
+            // en `dataTransfer.files` para drops externos en algunos sitios
+            // (WhatsApp, Slack), asi que interceptamos el drop a nivel GTK,
+            // leemos los archivos y sintetizamos un evento drop con DataTransfer
+            // poblado, dispatcheado en el elemento bajo el cursor.
+            super::scripts::install_filedrop_bridge(&view);
         });
     }
 
