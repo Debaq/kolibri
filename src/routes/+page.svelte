@@ -6,6 +6,7 @@
   import { CATALOG, type ServiceTemplate } from "$lib/catalog";
   import { isEnabled as autostartIsEnabled, enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { getVersion } from "@tauri-apps/api/app";
 
   type Theme = "dark" | "light" | "auto";
 
@@ -19,7 +20,7 @@
     keep_alive?: boolean;
   };
 
-  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder";
+  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder" | "services_admin";
 
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
@@ -125,14 +126,49 @@
     migrationNotice = false;
   }
 
-  async function checkUpdate() {
+  function parseVer(s: string): number[] {
+    return s.replace(/^v/, "").split(/[^0-9]+/).filter(Boolean).map(n => parseInt(n, 10) || 0);
+  }
+  function isNewer(a: string, b: string): boolean {
+    const xa = parseVer(a), xb = parseVer(b);
+    const n = Math.max(xa.length, xb.length);
+    for (let i = 0; i < n; i++) {
+      const x = xa[i] ?? 0, y = xb[i] ?? 0;
+      if (x > y) return true;
+      if (x < y) return false;
+    }
+    return false;
+  }
+
+  async function checkUpdate(silent = true) {
     try {
       const info = await invoke<UpdateInfo>("check_update");
-      if (!info.available) { updateInfo = null; return; }
+      if (!info.available) {
+        updateInfo = null;
+        if (!silent) updateMsg = `Estás en la última (${info.current})`;
+        return;
+      }
       const dismissed = typeof localStorage !== "undefined" ? localStorage.getItem(UPDATE_DISMISS_KEY) : null;
-      if (dismissed && dismissed === info.latest) { updateInfo = null; return; }
+      // Solo ocultar si el dismiss matchea o es de versión >= a la nueva.
+      // Si hay un release MÁS nuevo que el dismisseado, mostrar igual.
+      if (dismissed && !isNewer(info.latest, dismissed)) {
+        updateInfo = null;
+        if (!silent) updateMsg = `Hay ${info.latest} pero la dismisseaste`;
+        return;
+      }
       updateInfo = info;
-    } catch {}
+      if (!silent) updateMsg = `Nueva: ${info.latest}`;
+    } catch (e) {
+      console.warn("[kolibri] check_update failed:", e);
+      if (!silent) updateMsg = "Error: " + e;
+    }
+  }
+
+  let updateMsg = $state("");
+  async function manualCheckUpdate() {
+    updateMsg = "Buscando…";
+    await checkUpdate(false);
+    setTimeout(() => (updateMsg = ""), 3500);
   }
 
   async function openUpdate() {
@@ -424,15 +460,16 @@
       keepAlive: editKeepAlive,
     });
     editingId = null;
-    mode = "settings";
+    mode = "services_admin";
     await refresh();
   }
 
   function cancelEdit() {
     editingId = null;
-    mode = "settings";
+    mode = "services_admin";
   }
 
+  let appVersion = $state("");
   let desktopMsg = $state("");
   async function reinstallDesktop() {
     try {
@@ -602,7 +639,8 @@
     refreshMem();
     memTimer = setInterval(refreshMem, 2000);
     checkUpdate();
-    updateTimer = setInterval(checkUpdate, 6 * 60 * 60 * 1000);
+    updateTimer = setInterval(() => checkUpdate(), 6 * 60 * 60 * 1000);
+    try { appVersion = await getVersion(); } catch {}
   });
 
   onDestroy(() => {
@@ -759,24 +797,7 @@
       <button class="seg" class:on={theme === "light"} onclick={() => applyTheme("light")}>Claro</button>
       <button class="seg" class:on={theme === "auto"} onclick={() => applyTheme("auto")} title="Seguir tema del sistema">Auto</button>
       <span class="sep"></span>
-      <span class="seg-label">Servicios</span>
-      {#each services as s (s.id)}
-        {@const fav = faviconUrl(s.url)}
-        {@const useFav = fav && !faviconFailed.has("svc:" + s.id)}
-        <button class="pick" onclick={() => startEdit(s)} title="Editar {s.name}">
-          <span class="pick-icon" class:img={useFav} style:background={useFav ? "transparent" : (s.color ?? "#444")}>
-            {#if useFav}
-              <img src={fav} alt="" onerror={() => markFaviconFailed("svc:" + s.id)} />
-            {:else}
-              {initialOf(s)}
-            {/if}
-          </span>
-          <span class="pick-name">{s.name}</span>
-        </button>
-      {/each}
-      {#if services.length > 1}
-        <button class="seg" onclick={() => (mode = "reorder")} title="Ordenar servicios">Ordenar</button>
-      {/if}
+      <button class="seg" onclick={() => (mode = "services_admin")} title="Editar, ordenar, cerrar sesión">Servicios [config]</button>
       <span class="sep"></span>
       <span class="seg-label">Sistema</span>
       <button class="seg" class:on={autostartOn} onclick={toggleAutostart} title="Iniciar con sesión">
@@ -784,6 +805,11 @@
       </button>
       <button class="seg" onclick={reinstallDesktop} title="Reinstalar entrada en menu/launcher (Linux)">
         {desktopMsg || "Reinstalar entrada de menu"}
+      </button>
+      <span class="sep"></span>
+      <span class="seg-label" title="Versión de Kolibri instalada">v{appVersion || "?"}</span>
+      <button class="seg" onclick={manualCheckUpdate} title="Buscar actualizaciones ahora">
+        {updateMsg || "Buscar actualizaciones"}
       </button>
       <span class="sep"></span>
       <span class="seg-label">Atajo global</span>
@@ -833,8 +859,30 @@
       <button type="button" class="seg" data-no-drag onclick={() => clearSession("Cerrar sesión")} title="Cierra sesión borrando cookies; el servicio queda en la lista">Cerrar sesión</button>
       {#if clearMsg}<span class="kbd-item">{clearMsg}</span>{/if}
     </form>
-  {:else if mode === "reorder"}
+  {:else if mode === "services_admin"}
     <button class="add cancel" onclick={() => (mode = "settings")} title="Volver">×</button>
+    <div class="picker">
+      <span class="seg-label">Servicios</span>
+      {#each services as s (s.id)}
+        {@const fav = faviconUrl(s.url)}
+        {@const useFav = fav && !faviconFailed.has("svc:" + s.id)}
+        <button class="pick" onclick={() => startEdit(s)} title="Editar {s.name}">
+          <span class="pick-icon" class:img={useFav} style:background={useFav ? "transparent" : (s.color ?? "#444")}>
+            {#if useFav}
+              <img src={fav} alt="" onerror={() => markFaviconFailed("svc:" + s.id)} />
+            {:else}
+              {initialOf(s)}
+            {/if}
+          </span>
+          <span class="pick-name">{s.name}</span>
+        </button>
+      {/each}
+      {#if services.length > 1}
+        <button class="seg" onclick={() => (mode = "reorder")} title="Ordenar servicios">Ordenar</button>
+      {/if}
+    </div>
+  {:else if mode === "reorder"}
+    <button class="add cancel" onclick={() => (mode = "services_admin")} title="Volver">×</button>
     <div class="picker">
       <span class="seg-label">Ordenar</span>
       {#each services as s, i (s.id)}
