@@ -1,3 +1,4 @@
+mod favicons;
 mod services;
 mod tray;
 mod webview;
@@ -152,6 +153,8 @@ pub fn run() {
             get_toggle_shortcut,
             set_toggle_shortcut,
             emit_unread,
+            favicons::get_favicon,
+            favicons::clear_favicon_cache,
         ])
         .setup(|app| {
             tray::init(app.handle())?;

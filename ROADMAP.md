@@ -80,6 +80,25 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 - [ ] **Limpiar cookies/cache** desde Settings, por servicio
 - [ ] **Logout** un servicio sin perderlo de la lista
 
+## Deuda técnica detectada (review 2026-04-25)
+
+Backend Rust:
+
+- [ ] **`unwrap()` en todos los `Mutex::lock()`**: PoisonError = panic global. Reemplazar por manejo o al menos `expect()` con mensaje útil. Aplica a `lib.rs`, `services.rs`, `webview/mod.rs`
+- [ ] **`tray.rs:15` `default_window_icon().unwrap()`**: panic si el manifest no define icono. Fallback a icono embebido
+- [ ] **ID por `SystemTime` en ms** (`services.rs:89`): colisión teórica si dos `add_service` caen en el mismo ms. `unwrap_or(0)` además da ID=0 si el reloj falla → colisiones múltiples. Migrar a UUID v4
+- [ ] **`emit_unread` spam al iniciar** (`lib.rs:94`): `prev=0` inicial + primera carga con count>0 dispara notif nativa al abrir la app. Marcar primer tick como "seed" sin notificar
+- [ ] **Favicon cache sin TTL** (`favicons.rs`): si un sitio cambia logo, queda atascado para siempre. Agregar TTL (ej 7 días) o invalidación por `etag`
+- [ ] **`looks_valid` rechaza <64 bytes** (`favicons.rs:48`): un SVG mínimo legítimo se descarta. Bajar umbral o validar por content-type
+- [ ] **`data_dir_for` ignora fallo `create_dir_all`** (`services.rs:37,43`): falla silenciosa si no hay permisos. Propagar error
+- [ ] **`update_service` con `icon: Some("")` borra icono**: API ambigua. Separar en comando `clear_service_icon` o usar `Option<Option<String>>`
+- [ ] **HiDPI**: `set_size_request(-1, 56)` fija barra en px lógicos. En monitores 2x la barra se ve mitad. Multiplicar por `scale_factor()`
+
+Frontend:
+
+- [ ] **`+page.svelte` 992 líneas**: monolito. Romper en componentes (`Bar.svelte`, `Tabs.svelte`, `Settings.svelte`, `Picker.svelte`)
+- [ ] **Cero tests**: agregar al menos tests unitarios de `services.rs` (add/remove/reorder) y `favicons.rs` (detect_mime, looks_valid)
+
 ## Riesgos / deudas técnicas
 
 - **`gtk::Box::set_child_packing` API frágil**: si Tauri/gtk-rs hace breaking change, hay que adaptar `layout_linux.rs`

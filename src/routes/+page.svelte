@@ -64,12 +64,35 @@
   }
   let unlisteners: UnlistenFn[] = [];
 
-  function faviconUrl(url: string): string | null {
+  let favCache = $state<Record<string, string>>({});
+  const favLoading = new Set<string>();
+
+  function hostOf(url: string): string | null {
     try {
-      const host = new URL(url).hostname;
-      return `https://www.google.com/s2/favicons?domain=${host}&sz=64`;
+      return new URL(url).hostname.toLowerCase();
     } catch {
       return null;
+    }
+  }
+
+  function faviconUrl(url: string): string | null {
+    const host = hostOf(url);
+    if (!host) return null;
+    return favCache[host] ?? null;
+  }
+
+  async function loadFavicon(url: string) {
+    const host = hostOf(url);
+    if (!host) return;
+    if (favCache[host] || favLoading.has(host)) return;
+    favLoading.add(host);
+    try {
+      const data = await invoke<string>("get_favicon", { url });
+      favCache = { ...favCache, [host]: data };
+    } catch {
+      markFaviconFailed("host:" + host);
+    } finally {
+      favLoading.delete(host);
     }
   }
 
@@ -79,6 +102,13 @@
     next.add(key);
     faviconFailed = next;
   }
+
+  $effect(() => {
+    for (const s of services) loadFavicon(s.url);
+  });
+  $effect(() => {
+    if (mode === "picker") for (const t of CATALOG) loadFavicon(t.url);
+  });
 
   async function refresh() {
     services = await invoke<Service[]>("list_services");
@@ -374,13 +404,13 @@
   });
 </script>
 
-<div class="rz rz-s" onmousedown={startResize("South")}></div>
-<div class="rz rz-e" onmousedown={startResize("East")}></div>
-<div class="rz rz-w" onmousedown={startResize("West")}></div>
-<div class="rz rz-se" onmousedown={startResize("SouthEast")}></div>
-<div class="rz rz-sw" onmousedown={startResize("SouthWest")}></div>
+<div class="rz rz-s" role="separator" aria-orientation="horizontal" aria-label="Redimensionar abajo" onmousedown={startResize("South")}></div>
+<div class="rz rz-e" role="separator" aria-orientation="vertical" aria-label="Redimensionar derecha" onmousedown={startResize("East")}></div>
+<div class="rz rz-w" role="separator" aria-orientation="vertical" aria-label="Redimensionar izquierda" onmousedown={startResize("West")}></div>
+<div class="rz rz-se" role="separator" aria-label="Redimensionar esquina inferior derecha" onmousedown={startResize("SouthEast")}></div>
+<div class="rz rz-sw" role="separator" aria-label="Redimensionar esquina inferior izquierda" onmousedown={startResize("SouthWest")}></div>
 
-<div class="bar" data-tauri-drag-region onmousedown={dragOn}>
+<div class="bar" role="toolbar" aria-label="Barra de servicios" data-tauri-drag-region onmousedown={dragOn}>
   {#if mode === "tabs"}
     <button class="add" onclick={startPicker} title="Agregar servicio">＋</button>
 
