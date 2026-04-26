@@ -66,7 +66,6 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     if let Some(main_wv) = app.get_webview_window("main") {
         let app_for_capture = app.clone();
         let _ = main_wv.with_webview(move |pw| {
-            use webkit2gtk::WebViewExt;
             let view = pw.inner();
 
             // Nota: intentamos deshabilitar PSON con set_property runtime y

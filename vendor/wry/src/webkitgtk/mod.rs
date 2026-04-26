@@ -423,6 +423,59 @@ impl InnerWebView {
     }
 
     if let Some(settings) = WebViewExt::settings(webview) {
+      // PATCH KOLIBRI: deshabilitar feature `SiteIsolationEnabled` para
+      // permitir que múltiples WebView (servicios + bar) compartan un único
+      // WebProcess. Sin esto, WebKitGTK 2.40+ ignora `with_related_view` y
+      // separa procesos por origen.
+      unsafe {
+        use std::ffi::CString;
+        use std::os::raw::{c_char, c_void};
+        type GBoolean = i32;
+        extern "C" {
+          fn webkit_settings_get_all_features() -> *mut c_void;
+          fn webkit_feature_list_get_length(list: *mut c_void) -> usize;
+          fn webkit_feature_list_get(list: *mut c_void, index: usize) -> *mut c_void;
+          fn webkit_feature_list_unref(list: *mut c_void);
+          fn webkit_feature_get_identifier(feature: *mut c_void) -> *const c_char;
+          fn webkit_settings_set_feature_enabled(
+            settings: *mut c_void,
+            feature: *mut c_void,
+            enabled: GBoolean,
+          );
+        }
+        use glib::object::ObjectExt;
+        let settings_ptr: *mut c_void = settings.as_ptr() as *mut c_void;
+        let list = webkit_settings_get_all_features();
+        if !list.is_null() {
+          let len = webkit_feature_list_get_length(list);
+          // Targets quirúrgicos:
+          //   UsesSingleWebProcess          → ENABLE  (master switch a 1 proceso)
+          //   SiteIsolation                 → DISABLE
+          //   SiteIsolationSharedProcess    → DISABLE
+          //   ProcessSwapOnCrossSiteNavigation → DISABLE
+          let enable: &[&[u8]] = &[b"UsesSingleWebProcess"];
+          let disable: &[&[u8]] = &[
+            b"SiteIsolation",
+            b"SiteIsolationSharedProcess",
+            b"ProcessSwapOnCrossSiteNavigation",
+          ];
+          for i in 0..len {
+            let f = webkit_feature_list_get(list, i);
+            if f.is_null() { continue; }
+            let id_ptr = webkit_feature_get_identifier(f);
+            if id_ptr.is_null() { continue; }
+            let id_bytes = std::ffi::CStr::from_ptr(id_ptr).to_bytes();
+            if enable.iter().any(|t| *t == id_bytes) {
+              webkit_settings_set_feature_enabled(settings_ptr, f, 1);
+            } else if disable.iter().any(|t| *t == id_bytes) {
+              webkit_settings_set_feature_enabled(settings_ptr, f, 0);
+            }
+          }
+          webkit_feature_list_unref(list);
+        }
+        let _ = CString::new("");
+      }
+
       // Enable webgl, webaudio, canvas features as default.
       settings.set_enable_webgl(true);
       settings.set_enable_webaudio(true);
