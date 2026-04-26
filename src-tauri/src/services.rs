@@ -1,9 +1,11 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use url::Url;
 
 use crate::webview;
 
@@ -15,6 +17,15 @@ pub struct Service {
     pub icon: Option<String>,
     pub color: Option<String>,
     pub user_agent: Option<String>,
+    /// Slot dentro del host (0 = primero, 1 = segundo del mismo host, etc.).
+    /// Servicios con el mismo host comparten data_dir solo si comparten slot.
+    /// Para que N servicios de hosts distintos compartan WebProcess, usamos slot=0
+    /// salvo colisión de host (segundo whatsapp.com → slot=1, etc.).
+    #[serde(default)]
+    pub session_slot: u32,
+    /// Si está en true, la pestaña no se suspende por inactividad.
+    #[serde(default)]
+    pub keep_alive: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -23,6 +34,14 @@ pub struct PersistedState {
     pub active_id: Option<String>,
     #[serde(default)]
     pub toggle_shortcut: Option<String>,
+    /// Minutos de inactividad tras los que se suspende una pestaña.
+    /// 0 = nunca suspender. Default = 5.
+    #[serde(default = "default_suspend_minutes")]
+    pub inactive_suspend_minutes: u32,
+}
+
+fn default_suspend_minutes() -> u32 {
+    5
 }
 
 #[derive(Default)]
@@ -38,6 +57,44 @@ fn config_path<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<PathBuf> {
     Ok(dir.join("services.json"))
 }
 
+/// Saneo del host para usarlo como nombre de directorio (evita ':', '/', etc.).
+fn sanitize_host(host: &str) -> String {
+    host.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub fn host_of(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .map(|h| sanitize_host(&h))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Carpeta de datos compartida por host+slot. Servicios del mismo (host, slot)
+/// comparten WebContext → un único WebProcess.
+pub fn data_dir_for_service<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Result<PathBuf> {
+    let host = host_of(&svc.url);
+    let dir = app
+        .path()
+        .app_data_dir()?
+        .join("sessions")
+        .join("by-host")
+        .join(host)
+        .join(svc.session_slot.to_string());
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Mantengo wrapper viejo por compatibilidad (no usado, llamadas migradas).
+#[allow(dead_code)]
 pub fn data_dir_for<R: Runtime>(app: &AppHandle<R>, id: &str) -> tauri::Result<PathBuf> {
     let dir = app.path().app_data_dir()?.join("sessions").join(id);
     fs::create_dir_all(&dir)?;
@@ -52,23 +109,115 @@ pub fn save<R: Runtime>(app: &AppHandle<R>, state: &PersistedState) -> tauri::Re
     Ok(())
 }
 
+/// Asigna `session_slot` a un servicio nuevo en función de los existentes
+/// del mismo host. Slots pequeños se reusan si quedaron libres.
+fn allocate_slot(existing: &[Service], host: &str) -> u32 {
+    let used: HashSet<u32> = existing
+        .iter()
+        .filter(|s| host_of(&s.url) == host)
+        .map(|s| s.session_slot)
+        .collect();
+    let mut slot = 0u32;
+    while used.contains(&slot) {
+        slot += 1;
+    }
+    slot
+}
+
+/// Migración del esquema viejo `sessions/<uuid>/`: si encontramos al menos un
+/// directorio cuyo nombre parece UUID, eliminamos todo `sessions/` y emitimos
+/// evento al frontend para avisar al usuario.
+fn migrate_old_sessions<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<bool> {
+    let sessions_dir = app.path().app_data_dir()?.join("sessions");
+    if !sessions_dir.exists() {
+        return Ok(false);
+    }
+    let mut found_old = false;
+    let mut has_new = false;
+    for entry in fs::read_dir(&sessions_dir)?.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if s == "by-host" {
+            has_new = true;
+            continue;
+        }
+        // UUID v4 con guiones tiene 36 chars
+        if s.len() == 36 && s.chars().filter(|c| *c == '-').count() == 4 {
+            found_old = true;
+        }
+    }
+    if found_old {
+        // Borrar TODO sessions/ (lo nuevo se recreará vacío)
+        let _ = fs::remove_dir_all(&sessions_dir);
+        let _ = fs::create_dir_all(&sessions_dir);
+        return Ok(true);
+    }
+    let _ = has_new;
+    Ok(false)
+}
+
 pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    // 1) Migración: detectar/borrar sesiones viejas (esquema por UUID).
+    let migrated = migrate_old_sessions(app).unwrap_or(false);
+
     let path = config_path(app)?;
     if !path.exists() {
+        if migrated {
+            let _ = app.emit("kolibri:sessions_migrated", ());
+        }
         return Ok(());
     }
     let raw = fs::read_to_string(&path)?;
-    let parsed: PersistedState = serde_json::from_str(&raw).unwrap_or_default();
+    let mut parsed: PersistedState = serde_json::from_str(&raw).unwrap_or_default();
+
+    // 2) Asignar session_slot a servicios sin slot definido (orden estable).
+    //    Recorremos en orden y para cada uno calculamos el slot mirando los previos.
+    let mut assigned: Vec<Service> = Vec::with_capacity(parsed.services.len());
+    for svc in parsed.services.iter() {
+        let mut s = svc.clone();
+        // Si todos los servicios del mismo host tienen slot 0 por default y este es
+        // el primero, queda 0. Si ya hay otro con slot 0 del mismo host → asigna 1, etc.
+        let host = host_of(&s.url);
+        let used: HashSet<u32> = assigned
+            .iter()
+            .filter(|x| host_of(&x.url) == host)
+            .map(|x| x.session_slot)
+            .collect();
+        if used.contains(&s.session_slot) {
+            // colisión: re-asignar el menor libre
+            let mut slot = 0u32;
+            while used.contains(&slot) {
+                slot += 1;
+            }
+            s.session_slot = slot;
+        }
+        assigned.push(s);
+    }
+    parsed.services = assigned;
+
+    let active_id = parsed.active_id.clone();
     let state: State<AppState> = app.state();
     {
         let mut guard = state.inner.lock().expect("AppState mutex poisoned");
         *guard = parsed;
     }
-    let snapshot = state.inner.lock().expect("AppState mutex poisoned").clone();
-    for svc in snapshot.services.iter() {
-        let _ = webview::ensure_mounted(app, svc);
+
+    // Persistir slots reasignados.
+    {
+        let g = state.inner.lock().expect("AppState mutex poisoned").clone();
+        save(app, &g)?;
     }
-    let _ = webview::set_active(app, snapshot.active_id.as_deref());
+
+    // 3) NO montamos el activo aquí: necesitamos esperar a que el WebView
+    //    del bar esté capturado (ver setup_main_window → with_webview), de lo
+    //    contrario el primer servicio se monta sin `related_view` y abre un
+    //    WebProcess separado. El mount lo dispara `setup_main_window` desde
+    //    dentro del callback de captura, llamando `mount_active_service`.
+    let _ = active_id;
+
+    if migrated {
+        let _ = app.emit("kolibri:sessions_migrated", ());
+    }
     Ok(())
 }
 
@@ -87,6 +236,11 @@ pub fn add_service<R: Runtime>(
     color: Option<String>,
 ) -> Result<Service, String> {
     let id = uuid::Uuid::new_v4().to_string();
+    let host = host_of(&url);
+    let slot = {
+        let g = state.inner.lock().expect("AppState mutex poisoned");
+        allocate_slot(&g.services, &host)
+    };
     let svc = Service {
         id: id.clone(),
         name,
@@ -94,6 +248,8 @@ pub fn add_service<R: Runtime>(
         icon,
         color,
         user_agent: Some(CHROME_UA.to_string()),
+        session_slot: slot,
+        keep_alive: false,
     };
     {
         let mut g = state.inner.lock().expect("AppState mutex poisoned");
@@ -114,12 +270,50 @@ pub fn update_service<R: Runtime>(
     url: Option<String>,
     icon: Option<String>,
     color: Option<String>,
+    keep_alive: Option<bool>,
 ) -> Result<Service, String> {
     let updated;
     let url_changed;
     let was_active;
+    let new_slot_needed;
     {
         let mut g = state.inner.lock().expect("AppState mutex poisoned");
+        // Calcular si cambió host antes del borrow mut
+        let prev_host;
+        let prev_slot;
+        let new_host_opt;
+        {
+            let svc_ref = g
+                .services
+                .iter()
+                .find(|s| s.id == id)
+                .ok_or_else(|| "service not found".to_string())?;
+            prev_host = host_of(&svc_ref.url);
+            prev_slot = svc_ref.session_slot;
+            new_host_opt = url.as_ref().map(|u| host_of(u));
+        }
+        let host_changed = new_host_opt
+            .as_ref()
+            .map(|h| h != &prev_host)
+            .unwrap_or(false);
+        // Si cambia host, asignar nuevo slot mirando los OTROS servicios del nuevo host.
+        new_slot_needed = if host_changed {
+            let new_host = new_host_opt.clone().unwrap();
+            let used: HashSet<u32> = g
+                .services
+                .iter()
+                .filter(|s| s.id != id && host_of(&s.url) == new_host)
+                .map(|s| s.session_slot)
+                .collect();
+            let mut slot = 0u32;
+            while used.contains(&slot) {
+                slot += 1;
+            }
+            Some(slot)
+        } else {
+            None
+        };
+
         let svc = g
             .services
             .iter_mut()
@@ -142,9 +336,16 @@ pub fn update_service<R: Runtime>(
                 svc.color = Some(c);
             }
         }
+        if let Some(ka) = keep_alive {
+            svc.keep_alive = ka;
+        }
+        if let Some(slot) = new_slot_needed {
+            svc.session_slot = slot;
+        }
         updated = svc.clone();
         was_active = g.active_id.as_deref() == Some(&id);
         save(&app, &g).map_err(|e| e.to_string())?;
+        let _ = prev_slot;
     }
     if url_changed {
         webview::unmount(&app, &id).map_err(|e| e.to_string())?;
@@ -244,4 +445,90 @@ pub fn remove_service<R: Runtime>(
     }
     let _ = app.emit("kolibri:services_changed", ());
     Ok(())
+}
+
+/// Monta el servicio activo (si hay) y aplica visibilidad. Llamado desde
+/// el callback de captura del bar webview, garantizando que `related_view`
+/// esté disponible antes de crear el primer webview de servicio.
+pub fn mount_active_service<R: Runtime>(app: &AppHandle<R>) {
+    let state: State<AppState> = app.state();
+    let (active, svc_opt) = {
+        let g = state.inner.lock().expect("AppState mutex poisoned");
+        let active = g.active_id.clone();
+        let svc = active
+            .as_deref()
+            .and_then(|id| g.services.iter().find(|s| s.id == id).cloned());
+        (active, svc)
+    };
+    if let Some(svc) = svc_opt {
+        let _ = webview::ensure_mounted(app, &svc);
+    }
+    if active.is_some() {
+        let _ = webview::set_active(app, active.as_deref());
+    }
+}
+
+#[tauri::command]
+pub fn get_inactive_suspend_minutes(state: State<'_, AppState>) -> u32 {
+    state
+        .inner
+        .lock()
+        .expect("AppState mutex poisoned")
+        .inactive_suspend_minutes
+}
+
+#[tauri::command]
+pub fn set_inactive_suspend_minutes<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    minutes: u32,
+) -> Result<(), String> {
+    let mut g = state.inner.lock().expect("AppState mutex poisoned");
+    g.inactive_suspend_minutes = minutes;
+    save(&app, &g).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_keep_alive<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+    keep_alive: bool,
+) -> Result<(), String> {
+    {
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
+        let svc = g
+            .services
+            .iter_mut()
+            .find(|s| s.id == id)
+            .ok_or_else(|| "service not found".to_string())?;
+        svc.keep_alive = keep_alive;
+        save(&app, &g).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(())
+}
+
+/// Suspende (unmount real) un servicio si NO es el activo y NO tiene keep_alive.
+#[tauri::command]
+pub fn suspend_service<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<bool, String> {
+    let g = state.inner.lock().expect("AppState mutex poisoned");
+    if g.active_id.as_deref() == Some(&id) {
+        return Ok(false);
+    }
+    if let Some(svc) = g.services.iter().find(|s| s.id == id) {
+        if svc.keep_alive {
+            return Ok(false);
+        }
+    } else {
+        return Ok(false);
+    }
+    drop(g);
+    webview::unmount(&app, &id).map_err(|e| e.to_string())?;
+    Ok(true)
 }

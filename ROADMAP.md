@@ -100,6 +100,51 @@ Frontend:
 - [ ] **`+page.svelte` 992 líneas**: monolito. Romper en componentes (`Bar.svelte`, `Tabs.svelte`, `Settings.svelte`, `Picker.svelte`)
 - [ ] **Cero tests**: agregar al menos tests unitarios de `services.rs` (add/remove/reorder) y `favicons.rs` (detect_mime, looks_valid)
 
+## Optimización de RAM (branch `feat/ram-optimization`, PR #2 — 2026-04-26)
+
+Objetivo: superar a Rambox en consumo de RAM en Linux/WebKitGTK.
+
+### Resultado medido (3 servicios cargados: WhatsApp, Gmail, Outlook)
+
+| Estado                                      | RAM total | WebProcess |
+|---------------------------------------------|-----------|------------|
+| Original                                    | ~3 GB     | 5+         |
+| Lazy mount + suspend                        | 1.2 GB    | 4          |
+| + `with_related_view` + PSON off            | 1.1 GB    | 3          |
+| + vendor wry + FFI feature flags            | **1.3 GB** | **2**     |
+
+El segundo WebProcess remanente es un sandbox iframe forzado por `Cross-Origin-Embedder-Policy` de Gmail, no controlable por la app.
+
+### Cambios entregados
+
+- [x] **Lazy mount**: solo el servicio activo se monta al iniciar; el resto on-demand al hacer switch (`services.rs::mount_active_service` invocado dentro del callback `with_webview` que captura el bar — evita race en la captura).
+- [x] **Auto-suspend** configurable (default 5 min) por inactividad. Timers en frontend; backend expone `suspend_service` que valida invariantes.
+- [x] **`keep_alive`** por servicio: flag para excluir del suspend (apps con notif background, ej. WhatsApp). UI: checkbox en panel edit.
+- [x] **Settings UI**: input minutos de suspend (`get/set_inactive_suspend_minutes`).
+- [x] **Sesiones por host+slot** (`session_slot: u32` en `Service`): infra para casos futuros donde se requiera aislar 2 cuentas del mismo host. Hoy todos los servicios comparten WebContext default y cookies se aíslan por dominio nativamente.
+- [x] **Sin `data_directory`** en `mount_child` (Linux): todos los webviews comparten el WebContext default → mismo NetworkProcess + mismo pool de WebProcess.
+- [x] **`with_related_view(bar)`**: el bar webview se cachea (`BarWebViewHandle`) y se pasa como related a cada servicio. API nativa WebKitGTK para indicar relación de proceso (aunque WebKit moderno la trata como hint).
+- [x] **Vendor de wry-0.54.4** en `vendor/wry/`, `[patch.crates-io]` en `src-tauri/Cargo.toml`. Dos patches:
+  - `WebContext::builder().process_swap_on_cross_site_navigation_enabled(false)` en `webkitgtk/web_context.rs::WebContextImpl::new`.
+  - FFI directa a `webkit_settings_set_feature_enabled` en `set_webview_settings`: ENABLE `UsesSingleWebProcess`, DISABLE `SiteIsolation`, `SiteIsolationSharedProcess`, `ProcessSwapOnCrossSiteNavigation`. La API de feature flags no está expuesta en el crate `webkit2gtk` 2.0.x.
+- [x] **Migración destructiva**: `migrate_old_sessions` borra `sessions/<uuid>/` viejos al detectar IDs no compatibles; modal Svelte avisa al usuario que debe reloguear.
+- [x] **Cleanup `unsafe_html` warnings backend**: ninguno introducido por este branch.
+
+### Trade-offs aceptados
+
+- **Sin SiteIsolation**: si una pestaña ejecuta exploit, puede leer otros sites. Aceptable para chat aggregator (sitios confiables: Slack/Gmail/WhatsApp).
+- **Sin process isolation entre tabs**: si una tab crashea, caen todas.
+- **Cookies compartidas por dominio**: 2 cuentas del mismo host comparten login. El campo `session_slot` queda como infra para futura UX "agregar 2da cuenta" si se decide soportar.
+- **Vendor wry**: actualizar Tauri (cada 3-6 meses) requiere re-vendorear y re-aplicar patches. Documentado en commit history del branch.
+- **macOS** (`layout_other.rs`): sin tocar; las opt aplican solo a Linux.
+
+### Pendientes detectados durante el trabajo
+
+- [ ] **Bug migración**: la heurística `migrate_old_sessions` busca formato UUID v4 (`len==36, 4 guiones`) pero los IDs reales de Kolibri son timestamps (`svc_177...`, `1777...`). Nunca se gatilla y los dirs viejos coexisten con `by-host/`. Cambiar heurística a "cualquier dir top-level distinto de `by-host`".
+- [ ] **Validar suspend con engine unificado**: ahora con 1 sólo WebProcess compartido, `suspend_service` mata el WebView pero el proceso sigue vivo (sirve a otros). Medir si realmente libera RAM o solo libera DOM/JS de esa tab. Posiblemente revisar UX del feature.
+- [ ] **`new_ephemeral` en wry sin patch**: `WebContext::new_ephemeral()` no usa builder, no se puede inyectar PSON ahí. Kolibri no usa modo incógnito → inocuo, pero dejar nota si se agrega.
+- [ ] **Rebase strategy ante upgrade de Tauri**: documentar el procedimiento de re-vendor de wry (actualmente sólo está en commits del branch).
+
 ## Riesgos / deudas técnicas
 
 - **`gtk::Box::set_child_packing` API frágil**: si Tauri/gtk-rs hace breaking change, hay que adaptar `layout_linux.rs`
