@@ -31,7 +31,11 @@ pub struct WebContextImpl {
 impl WebContextImpl {
   pub fn new(data_directory: Option<&Path>) -> Self {
     use webkit2gtk::{CookieManagerExt, WebsiteDataManager, WebsiteDataManagerExt};
-    let mut context_builder = WebContext::builder();
+    // PATCH kolibri: deshabilitar PSON (Process Swap On Navigation) para
+    // permitir que múltiples webviews compartan un único WebProcess y reducir
+    // RAM. La propiedad es CONSTRUCT_ONLY: solo se puede pasar al builder.
+    let mut context_builder =
+      WebContext::builder().process_swap_on_cross_site_navigation_enabled(false);
     if let Some(data_directory) = data_directory {
       let data_manager = WebsiteDataManager::builder()
         // TODO: Consider taking a cache_directory so this can be in XDG_CACHE_HOME.

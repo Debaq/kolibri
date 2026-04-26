@@ -33,3 +33,8 @@ gtk = "0.18"
 # `webkit2gtk::WebView` a `WebviewBuilder::with_related_view` y compartir un
 # único WebKitWebProcess entre el bar y todos los servicios.
 webkit2gtk = "=2.0.2"
+
+# Vendoreamos wry para deshabilitar PSON (Process Swap On Navigation) y permitir
+# que múltiples webviews compartan un único WebProcess en Linux/WebKitGTK.
+[patch.crates-io]
+wry = { path = "../vendor/wry" }
