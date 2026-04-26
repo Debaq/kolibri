@@ -28,8 +28,6 @@
   let customName = $state("");
   let customUrl = $state("");
   let pendingRemoveId = $state<string | null>(null);
-  let dragId = $state<string | null>(null);
-  let dragOverId = $state<string | null>(null);
   let editingId = $state<string | null>(null);
   let editName = $state("");
   let editUrl = $state("");
@@ -353,7 +351,7 @@
     if (!pendingRemoveId) return;
     await invoke("remove_service", { id: pendingRemoveId });
     pendingRemoveId = null;
-    mode = "tabs";
+    mode = "services_admin";
     await refresh();
   }
 
@@ -382,41 +380,6 @@
     getCurrentWindow().startDragging().catch(console.error);
   }
 
-  function onTabDragStart(e: DragEvent, id: string) {
-    dragId = id;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", id);
-    }
-  }
-  function onTabDragOver(e: DragEvent, id: string) {
-    if (!dragId || dragId === id) return;
-    e.preventDefault();
-    dragOverId = id;
-    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-  }
-  function onTabDragLeave(id: string) {
-    if (dragOverId === id) dragOverId = null;
-  }
-  async function onTabDrop(e: DragEvent, targetId: string) {
-    e.preventDefault();
-    const src = dragId;
-    dragId = null;
-    dragOverId = null;
-    if (!src || src === targetId) return;
-    const ids = services.map((s) => s.id);
-    const from = ids.indexOf(src);
-    const to = ids.indexOf(targetId);
-    if (from < 0 || to < 0) return;
-    ids.splice(to, 0, ...ids.splice(from, 1));
-    services = ids.map((id) => services.find((s) => s.id === id)!).filter(Boolean);
-    await invoke("reorder_services", { ids });
-  }
-  function onTabDragEnd() {
-    dragId = null;
-    dragOverId = null;
-  }
-
   function startPicker() {
     mode = "picker";
   }
@@ -428,7 +391,7 @@
 
   function cancelRemove() {
     pendingRemoveId = null;
-    mode = "tabs";
+    mode = "services_admin";
   }
 
   function cancelConfirm() {
@@ -672,14 +635,6 @@
         <button
           class="tab"
           class:active={s.id === activeId}
-          class:drag-over={dragOverId === s.id}
-          class:dragging={dragId === s.id}
-          draggable="true"
-          ondragstart={(e) => onTabDragStart(e, s.id)}
-          ondragover={(e) => onTabDragOver(e, s.id)}
-          ondragleave={() => onTabDragLeave(s.id)}
-          ondrop={(e) => onTabDrop(e, s.id)}
-          ondragend={onTabDragEnd}
           onclick={() => selectService(s.id)}
           title={s.name}
         >
@@ -880,6 +835,9 @@
       {#if services.length > 1}
         <button class="seg" onclick={() => (mode = "reorder")} title="Ordenar servicios">Ordenar</button>
       {/if}
+      {#if services.length > 0}
+        <button class="seg" onclick={startRemove} title="Eliminar un servicio">Eliminar</button>
+      {/if}
     </div>
   {:else if mode === "reorder"}
     <button class="add cancel" onclick={() => (mode = "services_admin")} title="Volver">×</button>
@@ -942,9 +900,6 @@
       <button class="ctrl" onclick={reloadActive} title="Recargar">↻</button>
     {/if}
     <button class="ctrl" onclick={openSettings} title="Configuración">⚙</button>
-    {#if services.length > 0}
-      <button class="ctrl ctrl-remove" onclick={startRemove} title="Eliminar servicio">🗑</button>
-    {/if}
     <button class="ctrl" onclick={minimize} title="Minimizar">─</button>
     <button class="ctrl" onclick={toggleMax} title="Maximizar">▢</button>
     <button class="ctrl close" onclick={closeWin} title="Cerrar">×</button>
@@ -1056,8 +1011,6 @@
     border-color: #4a4a4a;
     color: #fff;
   }
-  .tab.dragging { opacity: 0.4; }
-  .tab.drag-over { border-color: #6a8; box-shadow: -2px 0 0 #6a8; }
   .tab-icon, .pick-icon {
     width: 26px;
     height: 26px;
@@ -1094,7 +1047,6 @@
     text-overflow: ellipsis;
     font-size: 11px;
   }
-  .ctrl-remove:hover { background: #4a2222; color: #f88; }
 
   .remove-pick { border-color: #5a2a2a; }
   .remove-pick:hover { background: #4a2222; border-color: #8a3a3a; color: #fdd; }
