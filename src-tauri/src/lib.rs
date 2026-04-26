@@ -1,6 +1,8 @@
 mod favicons;
 mod services;
+mod sysmem;
 mod tray;
+mod update;
 mod webview;
 
 use services::AppState;
@@ -144,6 +146,7 @@ pub fn run() {
         .manage(AppState::default())
         .manage(MountedRegistry::default())
         .manage(UnreadState::default())
+        .manage(sysmem::SysState::default())
         .invoke_handler(tauri::generate_handler![
             services::list_services,
             services::add_service,
@@ -163,6 +166,8 @@ pub fn run() {
             emit_unread,
             favicons::get_favicon,
             favicons::clear_favicon_cache,
+            sysmem::get_memory_usage,
+            update::check_update,
         ])
         .setup(|app| {
             tray::init(app.handle())?;

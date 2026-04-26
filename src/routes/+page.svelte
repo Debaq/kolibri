@@ -5,6 +5,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { CATALOG, type ServiceTemplate } from "$lib/catalog";
   import { isEnabled as autostartIsEnabled, enable as autostartEnable, disable as autostartDisable } from "@tauri-apps/plugin-autostart";
+  import { openUrl } from "@tauri-apps/plugin-opener";
 
   type Theme = "dark" | "light";
 
@@ -16,7 +17,7 @@
     color: string | null;
   };
 
-  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts";
+  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder";
 
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
@@ -38,6 +39,48 @@
   let toggleShortcut = $state("Ctrl+Alt+K");
   let shortcutDraft = $state("");
   let shortcutMsg = $state("");
+  let memBytes = $state(0);
+  let memTimer: ReturnType<typeof setInterval> | null = null;
+
+  type UpdateInfo = { available: boolean; current: string; latest: string; url: string; repo: string };
+  let updateInfo = $state<UpdateInfo | null>(null);
+  let updateTimer: ReturnType<typeof setInterval> | null = null;
+  const UPDATE_DISMISS_KEY = "kolibri:update_dismissed";
+
+  async function checkUpdate() {
+    try {
+      const info = await invoke<UpdateInfo>("check_update");
+      if (!info.available) { updateInfo = null; return; }
+      const dismissed = typeof localStorage !== "undefined" ? localStorage.getItem(UPDATE_DISMISS_KEY) : null;
+      if (dismissed && dismissed === info.latest) { updateInfo = null; return; }
+      updateInfo = info;
+    } catch {}
+  }
+
+  async function openUpdate() {
+    if (!updateInfo) return;
+    try { await openUrl(updateInfo.url); } catch {}
+  }
+
+  function dismissUpdate() {
+    if (updateInfo && typeof localStorage !== "undefined") {
+      localStorage.setItem(UPDATE_DISMISS_KEY, updateInfo.latest);
+    }
+    updateInfo = null;
+  }
+
+  function formatMem(b: number): string {
+    if (!b) return "—";
+    const mb = b / (1024 * 1024);
+    if (mb >= 1024) return (mb / 1024).toFixed(2) + " GB";
+    return mb.toFixed(0) + " MB";
+  }
+
+  async function refreshMem() {
+    try {
+      memBytes = await invoke<number>("get_memory_usage");
+    } catch {}
+  }
 
   function setLoading(id: string, loading: boolean) {
     const next = new Set(loadingIds);
@@ -280,6 +323,19 @@
     mode = "settings";
   }
 
+  async function renameService(s: Service, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === s.name) return;
+    await invoke("update_service", {
+      id: s.id,
+      name: trimmed,
+      url: s.url,
+      icon: s.icon ?? "",
+      color: s.color ?? "",
+    });
+    await refresh();
+  }
+
   async function moveService(id: string, delta: number) {
     const ids = services.map((s) => s.id);
     const i = ids.indexOf(id);
@@ -398,11 +454,17 @@
       )
     );
     window.addEventListener("keydown", onKey);
+    refreshMem();
+    memTimer = setInterval(refreshMem, 2000);
+    checkUpdate();
+    updateTimer = setInterval(checkUpdate, 6 * 60 * 60 * 1000);
   });
 
   onDestroy(() => {
     unlisteners.forEach((u) => u());
     window.removeEventListener("keydown", onKey);
+    if (memTimer) clearInterval(memTimer);
+    if (updateTimer) clearInterval(updateTimer);
   });
 </script>
 
@@ -551,24 +613,23 @@
       <button class="seg" class:on={theme === "light"} onclick={() => applyTheme("light")}>Claro</button>
       <span class="sep"></span>
       <span class="seg-label">Servicios</span>
-      {#each services as s, i (s.id)}
+      {#each services as s (s.id)}
         {@const fav = faviconUrl(s.url)}
         {@const useFav = fav && !faviconFailed.has("svc:" + s.id)}
-        <div class="svc-group">
-          <button class="ord-btn" onclick={() => moveService(s.id, -1)} disabled={i === 0} title="Subir">▲</button>
-          <button class="pick" onclick={() => startEdit(s)} title="Editar {s.name}">
-            <span class="pick-icon" class:img={useFav} style:background={useFav ? "transparent" : (s.color ?? "#444")}>
-              {#if useFav}
-                <img src={fav} alt="" onerror={() => markFaviconFailed("svc:" + s.id)} />
-              {:else}
-                {initialOf(s)}
-              {/if}
-            </span>
-            <span class="pick-name">{s.name}</span>
-          </button>
-          <button class="ord-btn" onclick={() => moveService(s.id, 1)} disabled={i === services.length - 1} title="Bajar">▼</button>
-        </div>
+        <button class="pick" onclick={() => startEdit(s)} title="Editar {s.name}">
+          <span class="pick-icon" class:img={useFav} style:background={useFav ? "transparent" : (s.color ?? "#444")}>
+            {#if useFav}
+              <img src={fav} alt="" onerror={() => markFaviconFailed("svc:" + s.id)} />
+            {:else}
+              {initialOf(s)}
+            {/if}
+          </span>
+          <span class="pick-name">{s.name}</span>
+        </button>
       {/each}
+      {#if services.length > 1}
+        <button class="seg" onclick={() => (mode = "reorder")} title="Ordenar servicios">Ordenar</button>
+      {/if}
       <span class="sep"></span>
       <span class="seg-label">Sistema</span>
       <button class="seg" class:on={autostartOn} onclick={toggleAutostart} title="Iniciar con sesión">
@@ -600,6 +661,37 @@
       <button type="button" class="link-btn" onclick={() => (editColor = "")}>limpiar</button>
       <button type="submit" class="custom-go">Guardar</button>
     </form>
+  {:else if mode === "reorder"}
+    <button class="add cancel" onclick={() => (mode = "settings")} title="Volver">×</button>
+    <div class="picker">
+      <span class="seg-label">Ordenar</span>
+      {#each services as s, i (s.id)}
+        {@const fav = faviconUrl(s.url)}
+        {@const useFav = fav && !faviconFailed.has("svc:" + s.id)}
+        <div class="svc-group">
+          <button class="ord-btn" onclick={() => moveService(s.id, -1)} disabled={i === 0} title="Subir">▲</button>
+          <span class="pick" title={s.name}>
+            <span class="pick-icon" class:img={useFav} style:background={useFav ? "transparent" : (s.color ?? "#444")}>
+              {#if useFav}
+                <img src={fav} alt="" onerror={() => markFaviconFailed("svc:" + s.id)} />
+              {:else}
+                {initialOf(s)}
+              {/if}
+            </span>
+            <input
+              type="text"
+              class="pick-name pick-name-input"
+              value={s.name}
+              data-no-drag
+              onchange={(e) => renameService(s, (e.currentTarget as HTMLInputElement).value)}
+              onkeydown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
+              title="Renombrar"
+            />
+          </span>
+          <button class="ord-btn" onclick={() => moveService(s.id, 1)} disabled={i === services.length - 1} title="Bajar">▼</button>
+        </div>
+      {/each}
+    </div>
   {:else if mode === "shortcuts"}
     <button class="add cancel" onclick={() => (mode = "settings")} title="Volver">×</button>
     <div class="picker shortcuts-row">
@@ -610,9 +702,21 @@
     </div>
   {/if}
 
-  <div class="spacer" data-tauri-drag-region></div>
+  {#if mode === "tabs"}
+    <div class="spacer" data-tauri-drag-region></div>
+  {/if}
 
   <div class="controls">
+    {#if updateInfo}
+      <button
+        class="update-badge"
+        onclick={openUpdate}
+        oncontextmenu={(e) => { e.preventDefault(); dismissUpdate(); }}
+        title={`Nueva versión ${updateInfo.latest} disponible (actual ${updateInfo.current}). Click: abrir release. Click derecho: descartar.`}
+        data-no-drag
+      >⬆ {updateInfo.latest}</button>
+    {/if}
+    <span class="mem" title="RAM en uso (proceso + webviews)">{formatMem(memBytes)}</span>
     <button class="ctrl" onclick={showHome} title="Inicio">⌂</button>
     {#if activeId}
       <button class="ctrl" onclick={reloadActive} title="Recargar">↻</button>
@@ -807,6 +911,18 @@
   }
   .pick:hover { background: #383838; border-color: #555; transform: translateY(-1px); }
   .pick:active { transform: translateY(0); }
+  .pick-name-input {
+    background: transparent;
+    border: 1px solid transparent;
+    color: inherit;
+    font: inherit;
+    padding: 2px 4px;
+    border-radius: 4px;
+    width: 120px;
+    outline: none;
+  }
+  .pick-name-input:hover { border-color: #555; }
+  .pick-name-input:focus { border-color: #888; background: #1f1f1f; }
 
   .custom-form {
     display: flex;
@@ -845,6 +961,35 @@
   .spacer { flex: 1; min-width: 12px; height: 100%; }
 
   .controls { display: flex; height: 100%; align-items: center; flex-shrink: 0; }
+  .mem {
+    font-size: 11px;
+    color: #aaa;
+    padding: 0 8px;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    white-space: nowrap;
+  }
+  :global([data-theme="light"]) .mem { color: #555; }
+  .update-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    margin: 0 6px;
+    padding: 0 10px;
+    border: 1px solid #00b894;
+    border-radius: 11px;
+    background: rgba(0, 184, 148, 0.12);
+    color: #00b894;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    line-height: 1;
+  }
+  .update-badge:hover { background: rgba(0, 184, 148, 0.25); color: #fff; }
+  :global([data-theme="light"]) .update-badge { color: #007a63; background: rgba(0, 184, 148, 0.15); }
   .ctrl {
     width: 38px;
     height: 100%;

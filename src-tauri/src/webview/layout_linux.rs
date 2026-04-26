@@ -12,9 +12,14 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         return Ok(());
     };
 
-    // CSS provider global: pinta cualquier área no cubierta por webview en negro.
-    // Evita que el bg blanco del tema GTK se vea como "borde" en la ventana.
-    let css = "window, box, .background { background-color: #1a1a1a; border: none; box-shadow: none; }";
+    // CSS provider en screen pero acotado por nombre de widget al window principal
+    // (#kolibri-main). Antes el selector `window, box, .background` afectaba a
+    // todos los GtkWindow del proceso (ej. GtkFileChooserDialog) dejando texto
+    // negro sobre fondo negro.
+    if let Ok(gtk_win) = window.gtk_window() {
+        gtk_win.set_widget_name("kolibri-main");
+    }
+    let css = "#kolibri-main, #kolibri-main box, #kolibri-main .background { background-color: #1a1a1a; border: none; box-shadow: none; }";
     let provider = gtk::CssProvider::new();
     if provider.load_from_data(css.as_bytes()).is_ok() {
         if let Some(screen) = gtk::gdk::Screen::default() {
@@ -62,8 +67,9 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
         .map_err(|e: url::ParseError| tauri::Error::Anyhow(anyhow::anyhow!(e)))?;
     let data_dir = data_dir_for(app, &svc.id)?;
 
-    let mut builder =
-        WebviewBuilder::new(&label, WebviewUrl::External(url)).data_directory(data_dir);
+    let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
+        .data_directory(data_dir)
+        .disable_drag_drop_handler();
     if let Some(ua) = svc.user_agent.as_deref() {
         builder = builder.user_agent(ua);
     }
