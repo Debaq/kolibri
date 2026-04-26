@@ -10,6 +10,8 @@ pub fn label_for(id: &str) -> String {
     format!("svc__{}", id)
 }
 
+mod scripts;
+
 #[cfg(target_os = "linux")]
 mod layout_linux;
 #[cfg(target_os = "linux")]

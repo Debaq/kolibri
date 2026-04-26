@@ -1,12 +1,11 @@
 use gtk::prelude::*;
 use tauri::{
-    webview::{PageLoadEvent, WebviewBuilder},
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl,
+    webview::WebviewBuilder, AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, WebviewUrl,
 };
 
 use crate::services::{data_dir_for, Service};
 
-use super::{label_for, BAR_HEIGHT};
+use super::{label_for, scripts, BAR_HEIGHT};
 
 pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let Some(window) = app.get_window("main") else {
@@ -68,21 +67,7 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
     if let Some(ua) = svc.user_agent.as_deref() {
         builder = builder.user_agent(ua);
     }
-    // Inyección del navigator spoof — útil para WhatsApp y otros que detectan SO.
-    builder = builder.initialization_script(NAV_SPOOF);
-    let unread_script = unread_watcher_script(&svc.id);
-    builder = builder.initialization_script(&unread_script);
-
-    let svc_id = svc.id.clone();
-    builder = builder.on_page_load(move |webview, payload| {
-        let phase = match payload.event() {
-            PageLoadEvent::Started => "started",
-            PageLoadEvent::Finished => "finished",
-        };
-        let _ = webview
-            .app_handle()
-            .emit("kolibri:page_load", (svc_id.clone(), phase));
-    });
+    builder = scripts::apply_common(builder, &svc.id);
 
     // GtkBox ignora pos/size, valores son placeholders.
     window.add_child(
@@ -127,59 +112,3 @@ pub fn apply_active<R: Runtime>(
     Ok(())
 }
 
-fn unread_watcher_script(svc_id: &str) -> String {
-    format!(
-        r#"(function () {{
-  if (window.__KOLIBRI_UNREAD__) return;
-  window.__KOLIBRI_UNREAD__ = true;
-  var SID = "{sid}";
-  var last = -1;
-  function parse(t) {{
-    if (!t) return 0;
-    var m = t.match(/\((\d+)\)/) || t.match(/^(\d+)\s/) || t.match(/\[(\d+)\]/);
-    return m ? parseInt(m[1], 10) || 0 : 0;
-  }}
-  function send(n) {{
-    if (n === last) return;
-    last = n;
-    try {{
-      var inv = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-      if (inv) inv('emit_unread', {{ serviceId: SID, count: n }});
-    }} catch (e) {{}}
-  }}
-  function tick() {{ send(parse(document.title)); }}
-  function attach() {{
-    var t = document.querySelector('title');
-    if (!t) {{ setTimeout(attach, 500); return; }}
-    new MutationObserver(tick).observe(t, {{ childList: true, characterData: true, subtree: true }});
-    tick();
-  }}
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
-  else attach();
-  setInterval(tick, 5000);
-}})();
-"#,
-        sid = svc_id.replace('"', "\\\"")
-    )
-}
-
-const NAV_SPOOF: &str = r#"
-(function () {
-  if (window.__KOLIBRI_NAV__) return;
-  window.__KOLIBRI_NAV__ = true;
-  try {
-    var def = function (prop, value) {
-      try { Object.defineProperty(navigator, prop, { get: function () { return value; }, configurable: true }); } catch (e) {}
-    };
-    def('platform', 'Linux x86_64');
-    def('vendor', 'Google Inc.');
-    def('vendorSub', '');
-    def('product', 'Gecko');
-    def('productSub', '20030107');
-    def('appName', 'Netscape');
-    def('appCodeName', 'Mozilla');
-    def('appVersion', '5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-    def('maxTouchPoints', 0);
-  } catch (e) {}
-})();
-"#;

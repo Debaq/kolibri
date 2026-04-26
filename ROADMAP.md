@@ -52,13 +52,14 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 
 ## Notificaciones / badge no-leídos
 
-- [ ] Inyectar JS por servicio que escuche cambios en `document.title` (la mayoría usa `(N) Inbox` para no-leídos)
-- [ ] Emitir evento Tauri `kolibri:unread` con `{service_id, count}`
-- [ ] Sumar contador y mostrar:
-  - Badge sobre el icono de la tab
-  - Tooltip en el tray icon
-  - Total combinado en algún lado del bar
-- [ ] Notif nativa via `tauri-plugin-notification` cuando hay nuevo no-leído
+- [x] Inyectar JS por servicio que escuche cambios en `document.title` (`webview/scripts.rs::unread_watcher_script`). Regex: `(N)`, `N `, `[N]`, `• N`, prefijo `*•!●` → 1 (Slack-like)
+- [x] Emitir evento Tauri `kolibri:unread` con `{service_id, count, total}` (`lib.rs::emit_unread`)
+- [x] Sumar contador y mostrar:
+  - [x] Badge sobre el icono de la tab
+  - [x] Tooltip en el tray icon
+  - [x] Total combinado en bar (badge al lado del `+`)
+- [x] Notif nativa via `tauri-plugin-notification` cuando hay nuevo no-leído (con seed anti-spam al cargar)
+- [x] Inyección compartida Linux + Windows (`webview/scripts.rs::apply_common`)
 
 ## Multi-OS
 

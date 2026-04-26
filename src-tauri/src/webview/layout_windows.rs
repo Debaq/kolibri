@@ -5,7 +5,7 @@ use tauri::{
 
 use crate::services::{data_dir_for, Service};
 
-use super::{label_for, BAR_HEIGHT};
+use super::{label_for, scripts, BAR_HEIGHT};
 
 const OFFSCREEN_X: f64 = -20000.0;
 
@@ -52,6 +52,7 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
     if let Some(ua) = svc.user_agent.as_deref() {
         builder = builder.user_agent(ua);
     }
+    builder = scripts::apply_common(builder, &svc.id);
 
     let (pos, size) = service_bounds(app);
     // Mounted offscreen by default; apply_active lo lleva on-screen si corresponde.

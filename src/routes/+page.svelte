@@ -33,6 +33,7 @@
   let editIcon = $state("");
   let loadingIds = $state<Set<string>>(new Set());
   let unread = $state<Record<string, number>>({});
+  let unreadTotal = $state(0);
   let autostartOn = $state(false);
   let toggleShortcut = $state("Ctrl+Alt+K");
   let shortcutDraft = $state("");
@@ -387,11 +388,12 @@
       await listen<{ service_id: string; count: number; total: number }>(
         "kolibri:unread",
         (e) => {
-          const { service_id, count } = e.payload;
+          const { service_id, count, total } = e.payload;
           const next = { ...unread };
           if (count > 0) next[service_id] = count;
           else delete next[service_id];
           unread = next;
+          unreadTotal = total;
         }
       )
     );
@@ -413,6 +415,9 @@
 <div class="bar" role="toolbar" aria-label="Barra de servicios" data-tauri-drag-region onmousedown={dragOn}>
   {#if mode === "tabs"}
     <button class="add" onclick={startPicker} title="Agregar servicio">＋</button>
+    {#if unreadTotal > 0}
+      <span class="badge total" title="Total sin leer">{unreadTotal > 99 ? "99+" : unreadTotal}</span>
+    {/if}
 
     <div class="tabs" data-tauri-drag-region>
       {#each services as s (s.id)}
@@ -988,5 +993,11 @@
     line-height: 1.4;
     margin-left: 2px;
     box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+  }
+  .badge.total {
+    margin: 0 6px 0 2px;
+    font-size: 11px;
+    padding: 2px 7px;
+    align-self: center;
   }
 </style>
