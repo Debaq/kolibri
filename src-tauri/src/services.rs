@@ -208,22 +208,12 @@ pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         save(app, &g)?;
     }
 
-    // 3) Lazy mount: solo montamos el servicio activo. El resto se monta on-demand
-    //    cuando el usuario hace switch_service.
-    if let Some(active) = active_id.as_deref() {
-        let svc_opt = state
-            .inner
-            .lock()
-            .expect("AppState mutex poisoned")
-            .services
-            .iter()
-            .find(|s| s.id == active)
-            .cloned();
-        if let Some(svc) = svc_opt {
-            let _ = webview::ensure_mounted(app, &svc);
-        }
-        let _ = webview::set_active(app, Some(active));
-    }
+    // 3) NO montamos el activo aquí: necesitamos esperar a que el WebView
+    //    del bar esté capturado (ver setup_main_window → with_webview), de lo
+    //    contrario el primer servicio se monta sin `related_view` y abre un
+    //    WebProcess separado. El mount lo dispara `setup_main_window` desde
+    //    dentro del callback de captura, llamando `mount_active_service`.
+    let _ = active_id;
 
     if migrated {
         let _ = app.emit("kolibri:sessions_migrated", ());
@@ -455,6 +445,27 @@ pub fn remove_service<R: Runtime>(
     }
     let _ = app.emit("kolibri:services_changed", ());
     Ok(())
+}
+
+/// Monta el servicio activo (si hay) y aplica visibilidad. Llamado desde
+/// el callback de captura del bar webview, garantizando que `related_view`
+/// esté disponible antes de crear el primer webview de servicio.
+pub fn mount_active_service<R: Runtime>(app: &AppHandle<R>) {
+    let state: State<AppState> = app.state();
+    let (active, svc_opt) = {
+        let g = state.inner.lock().expect("AppState mutex poisoned");
+        let active = g.active_id.clone();
+        let svc = active
+            .as_deref()
+            .and_then(|id| g.services.iter().find(|s| s.id == id).cloned());
+        (active, svc)
+    };
+    if let Some(svc) = svc_opt {
+        let _ = webview::ensure_mounted(app, &svc);
+    }
+    if active.is_some() {
+        let _ = webview::set_active(app, active.as_deref());
+    }
 }
 
 #[tauri::command]

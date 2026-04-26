@@ -29,3 +29,7 @@ sysinfo = { version = "0.32", default-features = false, features = ["system"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+# Misma versión exacta que usa wry-0.54.3 internamente. Necesario para pasar
+# `webkit2gtk::WebView` a `WebviewBuilder::with_related_view` y compartir un
+# único WebKitWebProcess entre el bar y todos los servicios.
+webkit2gtk = "=2.0.2"

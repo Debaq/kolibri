@@ -33,6 +33,24 @@ pub struct MountedRegistry {
     pub inner: Mutex<Vec<String>>,
 }
 
+/// Wrapper Send+Sync sobre `webkit2gtk::WebView`. La GObject subyacente
+/// solo se toca desde el GTK main thread (donde se ejecutan los closures de
+/// `with_webview` y donde wry construye los WebView), por lo que el wrapper
+/// es seguro en la práctica aunque el tipo no sea Send/Sync por defecto.
+#[cfg(target_os = "linux")]
+pub struct GtkMainThreadView(pub webkit2gtk::WebView);
+#[cfg(target_os = "linux")]
+unsafe impl Send for GtkMainThreadView {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for GtkMainThreadView {}
+
+/// Handle al `webkit2gtk::WebView` del bar (main window) para compartir el
+/// WebProcess con todos los servicios via `WebviewBuilder::with_related_view`.
+/// Sólo Linux: en otros sistemas la API de webkit2gtk no aplica.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub struct BarWebViewHandle(pub Mutex<Option<GtkMainThreadView>>);
+
 pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     platform::setup_main_window(app)
 }

@@ -5,9 +5,15 @@ use tauri::{
 
 use crate::services::{data_dir_for_service, Service};
 
-use super::{label_for, scripts, BAR_HEIGHT};
+use super::{label_for, scripts, BarWebViewHandle, GtkMainThreadView, BAR_HEIGHT};
 
 pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    // Registrar el handle compartido del WebView del bar antes de capturarlo.
+    // Idempotente vía try_state: si ya está, no lo pisamos.
+    if app.try_state::<BarWebViewHandle>().is_none() {
+        app.manage(BarWebViewHandle::default());
+    }
+
     let Some(window) = app.get_window("main") else {
         return Ok(());
     };
@@ -53,6 +59,24 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     vbox.set_margin_start(0);
     vbox.set_margin_end(0);
     vbox.set_spacing(0);
+
+    // Capturar el `webkit2gtk::WebView` del bar para reutilizarlo como
+    // `related_view` de cada servicio → todos comparten el mismo WebProcess.
+    // El closure de `with_webview` corre en el GTK main thread.
+    if let Some(main_wv) = app.get_webview_window("main") {
+        let app_for_capture = app.clone();
+        let _ = main_wv.with_webview(move |pw| {
+            let view = pw.inner();
+            if let Some(handle) = app_for_capture.try_state::<BarWebViewHandle>() {
+                let mut g = handle.inner().0.lock().expect("BarWebViewHandle mutex poisoned");
+                *g = Some(GtkMainThreadView(view));
+            }
+            // Bar capturado: ahora sí podemos montar el servicio activo con
+            // related_view → comparte WebProcess con el bar.
+            crate::services::mount_active_service(&app_for_capture);
+        });
+    }
+
     Ok(())
 }
 
@@ -65,15 +89,33 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
         .url
         .parse()
         .map_err(|e: url::ParseError| tauri::Error::Anyhow(anyhow::anyhow!(e)))?;
-    let data_dir = data_dir_for_service(app, svc)?;
+    // No pasamos data_directory: con `with_related_view` los WebView comparten
+    // el WebContext default y por tanto el mismo WebProcess. Las cookies
+    // persisten por dominio en el dir compartido del context (gestión nativa).
+    let _ = data_dir_for_service(app, svc)?;
 
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
-        .data_directory(data_dir)
         .disable_drag_drop_handler();
     if let Some(ua) = svc.user_agent.as_deref() {
         builder = builder.user_agent(ua);
     }
     builder = scripts::apply_common(builder, &svc.id);
+
+    // Reutilizar el WebProcess del bar (API nativa de WebKitGTK:
+    // `webkit_web_view_new_with_related_view`). Si por alguna razón aún no
+    // está cacheado, montamos sin related_view (fallback → proceso separado).
+    if let Some(handle) = app.try_state::<BarWebViewHandle>() {
+        let bar_view = handle
+            .inner()
+            .0
+            .lock()
+            .expect("BarWebViewHandle mutex poisoned")
+            .as_ref()
+            .map(|v| v.0.clone());
+        if let Some(view) = bar_view {
+            builder = builder.with_related_view(view);
+        }
+    }
 
     // GtkBox ignora pos/size, valores son placeholders.
     window.add_child(
