@@ -868,17 +868,8 @@
   </div>
 {/if}
 
-<main class="welcome">
-  {#if services.length === 0}
-    <img class="logo" src="/logo.png" alt="Kolibri" draggable="false" />
-    <h1>Bienvenido a Kolibri</h1>
-    <p>Click ＋ arriba para agregar tu primer servicio</p>
-  {:else if !activeId}
-    <img class="logo" src="/logo.png" alt="Kolibri" draggable="false" />
-    <h1>Kolibri</h1>
-    <p>Selecciona un servicio en la barra de arriba</p>
-  {/if}
-</main>
+<!-- El área debajo del bar la dibuja un widget GTK nativo (logo) en
+     `webview/layout_linux.rs`. No renderizar nada acá para no tapar el bar. -->
 
 <style>
   :global(html, body) {
