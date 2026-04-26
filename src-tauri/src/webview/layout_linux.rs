@@ -184,6 +184,35 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
         LogicalSize::new(800.0, 600.0),
     )?;
 
+    // Habilitar mediastream (getUserMedia) + auto-grant de permiso de mic/cam y
+    // notificaciones por servicio. Sin esto WhatsApp no graba audio: el botón
+    // de mic queda colgado porque WebKitGTK rechaza la petición por default.
+    if let Some(wv) = app.get_webview(&label) {
+        let _ = wv.with_webview(|pw| {
+            use webkit2gtk::{
+                NotificationPermissionRequest, PermissionRequestExt, SettingsExt,
+                UserMediaPermissionRequest, WebViewExt,
+            };
+            let view: webkit2gtk::WebView = pw.inner();
+            if let Some(s) = WebViewExt::settings(&view) {
+                s.set_enable_media_stream(true);
+                s.set_enable_mediasource(true);
+                s.set_enable_encrypted_media(true);
+            }
+            view.connect_permission_request(|_w, req| {
+                use webkit2gtk::glib::object::ObjectExt;
+                if req.is::<UserMediaPermissionRequest>()
+                    || req.is::<NotificationPermissionRequest>()
+                {
+                    req.allow();
+                } else {
+                    req.deny();
+                }
+                true
+            });
+        });
+    }
+
     // No ocultar antes de que widget se realice: WebKitGTK cancela el load
     // ("Load request cancelled") si el widget se esconde antes de mapear.
     // apply_active() ocultará los inactivos una vez que el load arrancó.
