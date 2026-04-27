@@ -2,6 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // CLI: `--log-ram` activa el logger de memoria. Se propaga vía env var
+    // para que lib::run la detecte en setup() sin reparsear argv.
+    if std::env::args().any(|a| a == "--log-ram") {
+        std::env::set_var("KOLIBRI_LOG_RAM", "1");
+    }
+
     // FIX EGL_BAD_PARAMETER en WebKitGTK 2.44+ con DMA-BUF renderer:
     // crashea en sistemas sin EGL/DRM correctamente configurado (NVIDIA propietario,
     // algunas AMD, Wayland sin compositor compatible). Forzar fallback al renderer

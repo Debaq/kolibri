@@ -64,6 +64,7 @@ pub fn ensure_mounted<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::R
     }
     platform::mount_child(app, svc)?;
     registry.inner.lock().expect("webview state mutex poisoned").push(label);
+    crate::ram_log::snapshot(app, &format!("mount id={}", svc.id));
     Ok(())
 }
 
@@ -72,6 +73,7 @@ pub fn unmount<R: Runtime>(app: &AppHandle<R>, svc_id: &str) -> tauri::Result<()
     platform::unmount_child(app, &label)?;
     let registry = app.state::<MountedRegistry>();
     registry.inner.lock().expect("webview state mutex poisoned").retain(|l| l != &label);
+    crate::ram_log::snapshot(app, &format!("unmount id={}", svc_id));
     Ok(())
 }
 
@@ -105,7 +107,9 @@ pub fn switch_service<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> Resu
     if let Some(svc) = svc_to_mount {
         ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
     }
-    set_active(&app, id.as_deref()).map_err(|e| e.to_string())
+    set_active(&app, id.as_deref()).map_err(|e| e.to_string())?;
+    crate::ram_log::snapshot(&app, &format!("switch to={}", id.as_deref().unwrap_or("-")));
+    Ok(())
 }
 
 #[tauri::command]

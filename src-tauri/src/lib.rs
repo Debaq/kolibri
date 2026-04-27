@@ -1,6 +1,7 @@
 #[cfg(target_os = "linux")]
 mod desktop_install;
 mod favicons;
+mod ram_log;
 mod services;
 mod sysmem;
 mod tray;
@@ -195,6 +196,23 @@ pub fn run() {
                 let _ = desktop_install::install(false);
             }
             tray::init(app.handle())?;
+
+            // RAM logger: activado vía `--log-ram` (env KOLIBRI_LOG_RAM=1).
+            if std::env::var_os("KOLIBRI_LOG_RAM").is_some() {
+                if let Ok(dir) = app.path().app_data_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let log_path = dir.join("ram.log");
+                    match ram_log::init(log_path.clone()) {
+                        Ok(()) => {
+                            eprintln!("[kolibri] RAM log: {}", log_path.display());
+                            ram_log::start_ticker(app.handle().clone());
+                            ram_log::snapshot(app.handle(), "startup");
+                        }
+                        Err(e) => eprintln!("[kolibri] RAM log init failed: {}", e),
+                    }
+                }
+            }
+
             webview::setup_main_window(app.handle())?;
             services::load_from_disk(app.handle())?;
 

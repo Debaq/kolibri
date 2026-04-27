@@ -67,6 +67,26 @@ sudo dnf install webkit2gtk4.1 gtk3
 
 - **`.msi`** o **`.exe` (NSIS)** — instalador estándar. Requiere WebView2 Runtime (preinstalado en Windows 11; Windows 10 lo descarga automático si falta).
 
+## Diagnóstico de RAM
+
+Para investigar consumo, arrancar con `--log-ram`:
+
+```bash
+kolibri --log-ram
+```
+
+Escribe a `~/.local/share/com.kolibri.app/ram.log` (Linux) o
+`%APPDATA%\com.kolibri.app\ram.log` (Windows). Tick cada 10s con RSS total
++ procesos hijo (WebKitWebProcess / msedgewebview2) ordenados por consumo.
+También loggea eventos: switch, mount, unmount, suspend.
+
+Ejemplo:
+
+```
+t+    12.345s | mount id=whatsapp        | rss=512.3MB delta=+187.2MB | active=whatsapp mounted=1/3 | procs=[WebKitWebProcess(1234):180.4MB, ...]
+t+    20.000s | tick                     | rss=508.7MB delta=-3.6MB | active=whatsapp mounted=1/3 | procs=[...]
+```
+
 ## Desarrollo
 
 ```bash
