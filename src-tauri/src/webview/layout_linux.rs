@@ -155,11 +155,12 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
         .url
         .parse()
         .map_err(|e: url::ParseError| tauri::Error::Anyhow(anyhow::anyhow!(e)))?;
-    // No pasamos data_directory: con `with_related_view` los WebView comparten
-    // el WebContext default y por tanto el mismo WebProcess. Las cookies
-    // persisten por dominio en el dir compartido del context (gestión nativa).
-    let _ = data_dir_for_service(app, svc)?;
-
+    // Modelo de sesión:
+    // - `isolated_session=false` (default): NO data_directory + with_related_view(bar)
+    //   → WebContext default compartido + mismo WebProcess que el bar (opt RAM).
+    // - `isolated_session=true` (Google/Microsoft): data_directory propio + sin
+    //   related_view → WebContext + NetworkProcess + WebProcess aislados. Necesario
+    //   para flows OAuth de Google/MS que rechazan login en context compartido.
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
         .disable_drag_drop_handler();
     if let Some(ua) = svc.user_agent.as_deref() {
@@ -167,19 +168,26 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
     }
     builder = scripts::apply_common(builder, &svc.id);
 
-    // Reutilizar el WebProcess del bar (API nativa de WebKitGTK:
-    // `webkit_web_view_new_with_related_view`). Si por alguna razón aún no
-    // está cacheado, montamos sin related_view (fallback → proceso separado).
-    if let Some(handle) = app.try_state::<BarWebViewHandle>() {
-        let bar_view = handle
-            .inner()
-            .0
-            .lock()
-            .expect("BarWebViewHandle mutex poisoned")
-            .as_ref()
-            .map(|v| v.0.clone());
-        if let Some(view) = bar_view {
-            builder = builder.with_related_view(view);
+    if svc.isolated_session {
+        let data_dir = data_dir_for_service(app, svc)?;
+        builder = builder.data_directory(data_dir);
+        // No related_view: queremos WebContext aislado. Asumimos +1 WebProcess.
+    } else {
+        let _ = data_dir_for_service(app, svc)?;
+        // Reutilizar el WebProcess del bar (API nativa de WebKitGTK:
+        // `webkit_web_view_new_with_related_view`). Si por alguna razón aún no
+        // está cacheado, montamos sin related_view (fallback → proceso separado).
+        if let Some(handle) = app.try_state::<BarWebViewHandle>() {
+            let bar_view = handle
+                .inner()
+                .0
+                .lock()
+                .expect("BarWebViewHandle mutex poisoned")
+                .as_ref()
+                .map(|v| v.0.clone());
+            if let Some(view) = bar_view {
+                builder = builder.with_related_view(view);
+            }
         }
     }
 

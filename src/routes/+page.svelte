@@ -18,6 +18,7 @@
     color: string | null;
     session_slot?: number;
     keep_alive?: boolean;
+    isolated_session?: boolean;
   };
 
   type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder" | "services_admin";
@@ -34,6 +35,7 @@
   let editColor = $state("");
   let editIcon = $state("");
   let editKeepAlive = $state(false);
+  let editIsolated = $state(false);
   let loadingIds = $state<Set<string>>(new Set());
   let unread = $state<Record<string, number>>({});
   let unreadTotal = $state(0);
@@ -409,6 +411,7 @@
     editColor = s.color ?? "";
     editIcon = s.icon ?? "";
     editKeepAlive = !!s.keep_alive;
+    editIsolated = !!s.isolated_session;
     mode = "edit";
   }
 
@@ -421,6 +424,7 @@
       icon: editIcon,
       color: editColor,
       keepAlive: editKeepAlive,
+      isolatedSession: editIsolated,
     });
     editingId = null;
     mode = "services_admin";
@@ -471,6 +475,7 @@
       icon: s.icon ?? "",
       color: s.color ?? "",
       keepAlive: s.keep_alive ?? false,
+      isolatedSession: s.isolated_session ?? false,
     });
     await refresh();
   }
@@ -807,6 +812,10 @@
       <label class="kbd-item" data-no-drag title="Si está activo, no se suspende por inactividad (útil para apps con notificaciones en background)">
         <input type="checkbox" bind:checked={editKeepAlive} data-no-drag />
         Mantener viva en segundo plano
+      </label>
+      <label class="kbd-item" data-no-drag title="Sesión WebKit aislada. Necesario para Google/Microsoft (rechazan login en context compartido). Cuesta +1 proceso de RAM.">
+        <input type="checkbox" bind:checked={editIsolated} data-no-drag />
+        Sesión aislada
       </label>
       <button type="submit" class="custom-go">Guardar</button>
       <span class="sep"></span>

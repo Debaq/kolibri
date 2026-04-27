@@ -70,7 +70,7 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 
 - [x] Iconos de la app (32x32, 64x64, 128x128, 128x128@2x, .icns, .ico, Square*, Android, iOS) generados desde `logo.png` con `pnpm tauri icon`
 - [ ] Auto-update via Tauri updater (firma + endpoint)
-- [ ] Empaquetado `.deb`, `.rpm`, `.AppImage`, `.msi`
+- [x] Empaquetado `.AppImage` (Linux) y `.msi` (Windows). `.deb`/`.rpm` descartados.
 - [ ] CI GitHub Actions: build cross-platform + release on tag
 - [ ] README usuario final
 - [x] **Auto-instalar `.desktop` + iconos en Linux**: `desktop_install.rs` escribe `~/.local/share/applications/kolibri.desktop` (o `$XDG_DATA_HOME/...`) y copia iconos hicolor 32/64/128/256/512. Idempotente via marker `install.version` (re-instala si cambia version o exec path). `.desktop` incluye `StartupWMClass=kolibri`; `gtk::glib::set_prgname("kolibri")` hace que GTK setee WM_CLASS instance matching → el WM asocia ventana al icono. Refresca caches via `update-desktop-database` y `gtk-update-icon-cache` (best-effort). Boton "Reinstalar entrada de menu" en Settings (cmd `reinstall_desktop_entry`).
@@ -82,12 +82,37 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 - [x] **Limpiar cookies/cache** desde Settings, por servicio (cmd `clear_service_session`, botón en edit modal)
 - [x] **Logout** un servicio sin perderlo de la lista (mismo cmd, botón "Cerrar sesión" en edit modal)
 
+## Release 0.1.4 (2026-04-26) — fix login Google/Microsoft
+
+Bug introducido en `feat/ram-optimization` (0.1.3): al unificar todos los servicios en un solo `WebContext` compartido (sin `data_directory`) + patch FFI `UsesSingleWebProcess`/`SiteIsolation off` aplicado globalmente, Google/Microsoft detectaban entorno embebido y bloqueaban login redirigiendo a `workspace.google.com` "browser may not be secure". Outlook tampoco persistía cookies.
+
+### Cambios
+
+- [x] **`Service.isolated_session: bool`** (`services.rs`): flag por servicio. Hosts que lo requieren auto-detectados via `needs_isolated_session(host)` para `*.google.com`, `*.gmail.com`, `*.live.com`, `*.outlook.com`, `*.office.com`, `*.microsoft.com`, `*.microsoftonline.com`, `*.googleusercontent.com`. Migración en `load_from_disk` upgradea servicios persistidos.
+- [x] **`mount_child` (`layout_linux.rs`)**: si `isolated_session=true` → `data_directory` propio (WebContext + NetworkProcess + WebProcess aislados, modelo v0.1.0). Si false → engine unificado (opt RAM 0.1.3).
+- [x] **Patch FFI condicional** (`vendor/wry/src/webkitgtk/`): `WebContextImpl.is_unified` (true cuando `data_directory=None`). `set_webview_settings` solo aplica `UsesSingleWebProcess`/`SiteIsolation off` si el context es unificado. Servicios aislados conservan comportamiento WebKit estándar.
+- [x] **Persistencia robusta de cookies** (`vendor/wry/src/webkitgtk/web_context.rs`) para context aislado:
+  - `CookiePersistentStorage::Sqlite` (no `Text`) — robusto con cookies grandes de Microsoft.
+  - `CookieAcceptPolicy::Always` — acepta third-party (necesario para flow `login.live.com → outlook.live.com`).
+  - `set_itp_enabled(false)` — ITP rompía "Stay signed in" cross-domain.
+- [x] **Toggle UI** "Sesión aislada" en panel edit del servicio (re-mount al cambiar).
+- [x] **Tests nuevos**: `needs_isolated_session_*`, `host_of_handles_subdomains_and_ports`. Total: 23 tests verde.
+- [x] **CI workflow** (`.github/workflows/ci.yml`): `cargo test --lib` + clippy + fmt + svelte-check + frontend build en push/PR a `main`.
+- [x] **Warnings vendor wry silenciados** (deprecations `run_javascript` 2.40+, unused import del patch FFI).
+- [x] **Bump** `package.json`, `Cargo.toml`, `tauri.conf.json` → 0.1.4.
+
+### Trade-offs aceptados
+
+- **+1 WebProcess** por servicio aislado (Gmail + Outlook → ~3 procesos vs 2 unificado puro). Sigue muy por debajo de Rambox (~3 GB vs ~1.5 GB Kolibri esperado).
+- **`CookieAcceptPolicy::Always`** en aislados: superficie de tracking third-party. Aceptable: usuario eligió usar Gmail/Outlook que ya son ecosistemas Google/MS.
+
 ## Release 0.1.3 (2026-04-26)
 
 - [x] **WhatsApp graba audio**: en `mount_child` (Linux), via `with_webview`, habilitar `enable_media_stream` / `enable_mediasource` / `enable_encrypted_media`, y conectar `permission-request` para auto-grant `UserMediaPermissionRequest` y `NotificationPermissionRequest`. Resto deny.
 - [x] **Drag-and-drop de archivos** a WhatsApp/Slack: bridge GTK→JS en `scripts.rs::install_filedrop_bridge`. Intercepta signal `drag-data-received` (target text/uri-list), lee bytes (cap 64 MiB), base64-encodea, sintetiza `dragenter/dragover/drop` con `DataTransfer` poblado en el elemento bajo el cursor.
 - [x] **Catalogo reducido**: solo WhatsApp, Gmail, Outlook hasta validar el resto con engine unificado.
-- [ ] **Probar manana 2026-04-27**: WhatsApp mic, DnD imagenes/PDF/videos cortos, regresiones en Gmail/Outlook.
+- [x] **Validado 2026-04-26**: WhatsApp mic OK, DnD archivos OK.
+- [ ] **Bug Gmail login**: no permite iniciar sesión (probable bloqueo Google "navegador no seguro" por UA/embedded webview). Investigar UA override o flujo OAuth externo.
 
 ## Deuda técnica detectada (review 2026-04-25)
 

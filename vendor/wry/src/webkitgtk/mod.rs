@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-License-Identifier: MIT
 
+// Silenciar deprecations del WebKitGTK 2.40+ (`run_javascript`) sin migrar a la
+// API nueva: este crate es vendoreado solo para parches Kolibri (PSON/SiteIso).
+#![allow(deprecated)]
+
 #[cfg(feature = "x11")]
 use dpi::LogicalPosition;
 use dpi::LogicalSize;
@@ -301,7 +305,8 @@ impl InnerWebView {
     }
 
     // Webview Settings
-    Self::set_webview_settings(&webview, &attributes);
+    let is_unified_ctx = web_context.os.is_unified;
+    Self::set_webview_settings(&webview, &attributes, is_unified_ctx);
 
     // Webview handlers
     Self::attach_handlers(&webview, web_context, &mut attributes);
@@ -411,7 +416,7 @@ impl InnerWebView {
     builder.build()
   }
 
-  fn set_webview_settings(webview: &WebView, attributes: &WebViewAttributes) {
+  fn set_webview_settings(webview: &WebView, attributes: &WebViewAttributes, is_unified_ctx: bool) {
     // Disable input preedit,fcitx input editor can anchor at edit cursor position
     if let Some(input_context) = webview.input_method_context() {
       input_context.set_enable_preedit(false);
@@ -427,7 +432,10 @@ impl InnerWebView {
       // permitir que múltiples WebView (servicios + bar) compartan un único
       // WebProcess. Sin esto, WebKitGTK 2.40+ ignora `with_related_view` y
       // separa procesos por origen.
-      unsafe {
+      // SOLO se aplica si el WebContext es el "unificado" (sin data_directory).
+      // Para servicios aislados (Gmail/Outlook con data_directory propio) el
+      // patch se omite porque rompe el flow OAuth de Google/MS.
+      if is_unified_ctx { unsafe {
         use std::ffi::CString;
         use std::os::raw::{c_char, c_void};
         type GBoolean = i32;
@@ -443,7 +451,6 @@ impl InnerWebView {
             enabled: GBoolean,
           );
         }
-        use glib::object::ObjectExt;
         let settings_ptr: *mut c_void = settings.as_ptr() as *mut c_void;
         let list = webkit_settings_get_all_features();
         if !list.is_null() {
@@ -474,7 +481,7 @@ impl InnerWebView {
           webkit_feature_list_unref(list);
         }
         let _ = CString::new("");
-      }
+      } } // close `if is_unified_ctx { unsafe { ... } }`
 
       // Enable webgl, webaudio, canvas features as default.
       settings.set_enable_webgl(true);

@@ -26,6 +26,12 @@ pub struct Service {
     /// Si está en true, la pestaña no se suspende por inactividad.
     #[serde(default)]
     pub keep_alive: bool,
+    /// Si está en true, el servicio se monta con `data_directory` propio →
+    /// WebContext + NetworkProcess + WebProcess aislados (vuelve al modelo v0.1.0
+    /// para ese servicio). Necesario para Google/Microsoft que rechazan login si
+    /// detectan WebContext compartido. Trade-off: +1 WebProcess en RAM.
+    #[serde(default)]
+    pub isolated_session: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -50,6 +56,22 @@ pub struct AppState {
 }
 
 const CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/// Hosts que requieren WebContext aislado por default (Google/Microsoft rechazan
+/// login en WebContext compartido → "browser may not be secure").
+fn needs_isolated_session(host: &str) -> bool {
+    const ISOLATED_DOMAINS: &[&str] = &[
+        "google.com",
+        "gmail.com",
+        "googleusercontent.com",
+        "live.com",
+        "outlook.com",
+        "office.com",
+        "microsoft.com",
+        "microsoftonline.com",
+    ];
+    ISOLATED_DOMAINS.iter().any(|d| host == *d || host.ends_with(&format!(".{}", d)))
+}
 
 fn config_path<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<PathBuf> {
     let dir = app.path().app_data_dir()?;
@@ -168,9 +190,14 @@ pub fn load_from_disk<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let mut assigned: Vec<Service> = Vec::with_capacity(parsed.services.len());
     for svc in parsed.services.iter() {
         let mut s = svc.clone();
+        // Migración: hosts que requieren WebContext aislado (Google/Microsoft).
+        // Si el servicio persistido no estaba marcado, lo marcamos ahora.
+        let host = host_of(&s.url);
+        if !s.isolated_session && needs_isolated_session(&host) {
+            s.isolated_session = true;
+        }
         // Si todos los servicios del mismo host tienen slot 0 por default y este es
         // el primero, queda 0. Si ya hay otro con slot 0 del mismo host → asigna 1, etc.
-        let host = host_of(&s.url);
         let used: HashSet<u32> = assigned
             .iter()
             .filter(|x| host_of(&x.url) == host)
@@ -234,6 +261,7 @@ pub fn add_service<R: Runtime>(
         let g = state.inner.lock().expect("AppState mutex poisoned");
         allocate_slot(&g.services, &host)
     };
+    let isolated = needs_isolated_session(&host);
     let svc = Service {
         id: id.clone(),
         name,
@@ -243,6 +271,7 @@ pub fn add_service<R: Runtime>(
         user_agent: Some(CHROME_UA.to_string()),
         session_slot: slot,
         keep_alive: false,
+        isolated_session: isolated,
     };
     {
         let mut g = state.inner.lock().expect("AppState mutex poisoned");
@@ -264,9 +293,11 @@ pub fn update_service<R: Runtime>(
     icon: Option<String>,
     color: Option<String>,
     keep_alive: Option<bool>,
+    isolated_session: Option<bool>,
 ) -> Result<Service, String> {
     let updated;
     let url_changed;
+    let isolated_changed;
     let was_active;
     let new_slot_needed;
     {
@@ -332,6 +363,12 @@ pub fn update_service<R: Runtime>(
         if let Some(ka) = keep_alive {
             svc.keep_alive = ka;
         }
+        isolated_changed = isolated_session
+            .map(|new| new != svc.isolated_session)
+            .unwrap_or(false);
+        if let Some(iso) = isolated_session {
+            svc.isolated_session = iso;
+        }
         if let Some(slot) = new_slot_needed {
             svc.session_slot = slot;
         }
@@ -340,7 +377,7 @@ pub fn update_service<R: Runtime>(
         save(&app, &g).map_err(|e| e.to_string())?;
         let _ = prev_slot;
     }
-    if url_changed {
+    if url_changed || isolated_changed {
         webview::unmount(&app, &id).map_err(|e| e.to_string())?;
         webview::ensure_mounted(&app, &updated).map_err(|e| e.to_string())?;
         if was_active {
@@ -603,6 +640,7 @@ mod tests {
             user_agent: None,
             session_slot: slot,
             keep_alive: false,
+            isolated_session: false,
         }
     }
 
@@ -683,5 +721,33 @@ mod tests {
         let out = apply_reorder(v, &ids);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "a");
+    }
+
+    #[test]
+    fn isolated_session_matches_google_microsoft() {
+        assert!(needs_isolated_session("mail.google.com"));
+        assert!(needs_isolated_session("accounts.google.com"));
+        assert!(needs_isolated_session("google.com"));
+        assert!(needs_isolated_session("outlook.live.com"));
+        assert!(needs_isolated_session("login.live.com"));
+        assert!(needs_isolated_session("login.microsoftonline.com"));
+        assert!(needs_isolated_session("outlook.office.com"));
+    }
+
+    #[test]
+    fn isolated_session_does_not_match_unrelated() {
+        assert!(!needs_isolated_session("web.whatsapp.com"));
+        assert!(!needs_isolated_session("slack.com"));
+        assert!(!needs_isolated_session("notion.so"));
+        // Sufijos engañosos no deben matchear (solo `.google.com` o exact).
+        assert!(!needs_isolated_session("notgoogle.com"));
+        assert!(!needs_isolated_session("malicious-google.com.evil.com"));
+    }
+
+    #[test]
+    fn host_of_handles_subdomains_and_ports() {
+        assert_eq!(host_of("https://mail.google.com"), "mail.google.com");
+        assert_eq!(host_of("https://outlook.live.com:443/mail"), "outlook.live.com");
+        assert_eq!(host_of("https://web.whatsapp.com/?param=x"), "web.whatsapp.com");
     }
 }

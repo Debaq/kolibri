@@ -16,9 +16,10 @@ use std::{
   rc::Rc,
 };
 use webkit2gtk::{
-  ApplicationInfo, AutomationSessionExt, CookiePersistentStorage, DownloadExt, SecurityManagerExt,
-  URIRequest, URIRequestExt, URISchemeRequest, URISchemeRequestExt, URISchemeResponse,
-  URISchemeResponseExt, WebContext, WebContextExt as Webkit2gtkContextExt, WebView, WebViewExt,
+  ApplicationInfo, AutomationSessionExt, CookieAcceptPolicy, CookiePersistentStorage, DownloadExt,
+  SecurityManagerExt, URIRequest, URIRequestExt, URISchemeRequest, URISchemeRequestExt,
+  URISchemeResponse, URISchemeResponseExt, WebContext, WebContextExt as Webkit2gtkContextExt,
+  WebView, WebViewExt,
 };
 
 #[derive(Debug)]
@@ -26,6 +27,11 @@ pub struct WebContextImpl {
   context: WebContext,
   automation: bool,
   app_info: Option<ApplicationInfo>,
+  /// PATCH KOLIBRI: true cuando este context se usa para el "engine unificado"
+  /// (data_directory=None → comparte WebProcess). False cuando data_directory=Some
+  /// (servicio aislado tipo Gmail/Outlook). Determina si se aplica el patch FFI
+  /// `UsesSingleWebProcess`/`SiteIsolation off` en `set_webview_settings`.
+  pub is_unified: bool,
 }
 
 impl WebContextImpl {
@@ -34,6 +40,7 @@ impl WebContextImpl {
     // PATCH kolibri: deshabilitar PSON (Process Swap On Navigation) para
     // permitir que múltiples webviews compartan un único WebProcess y reducir
     // RAM. La propiedad es CONSTRUCT_ONLY: solo se puede pasar al builder.
+    let is_unified = data_directory.is_none();
     let mut context_builder =
       WebContext::builder().process_swap_on_cross_site_navigation_enabled(false);
     if let Some(data_directory) = data_directory {
@@ -42,26 +49,35 @@ impl WebContextImpl {
         .base_cache_directory(data_directory.to_string_lossy())
         .base_data_directory(data_directory.to_string_lossy())
         .build();
+      // PATCH KOLIBRI: deshabilitar ITP en context aislado. ITP de WebKit
+      // bloquea cookies third-party (login.live.com→outlook.live.com,
+      // accounts.google.com→mail.google.com) y rompe "stay signed in".
+      data_manager.set_itp_enabled(false);
       if let Some(cookie_manager) = data_manager.cookie_manager() {
+        // SQLite es más robusto que Text para cookies grandes (Microsoft/Google
+        // tienen cookies de varios KB).
         cookie_manager.set_persistent_storage(
-          &data_directory.join("cookies").to_string_lossy(),
-          CookiePersistentStorage::Text,
+          &data_directory.join("cookies.sqlite").to_string_lossy(),
+          CookiePersistentStorage::Sqlite,
         );
+        // Aceptar todas las cookies (incluso third-party). Default WebKit puede
+        // ser NoThirdParty → rompe OAuth flows multi-domain.
+        cookie_manager.set_accept_policy(CookieAcceptPolicy::Always);
       }
       context_builder = context_builder.website_data_manager(&data_manager);
     }
     let context = context_builder.build();
 
-    Self::create_context(context)
+    Self::create_context(context, is_unified)
   }
 
   pub fn new_ephemeral() -> Self {
     let context = WebContext::new_ephemeral();
 
-    Self::create_context(context)
+    Self::create_context(context, false)
   }
 
-  pub fn create_context(context: WebContext) -> Self {
+  pub fn create_context(context: WebContext, is_unified: bool) -> Self {
     let automation = false;
     context.set_automation_allowed(automation);
 
@@ -84,6 +100,7 @@ impl WebContextImpl {
       context,
       automation,
       app_info: Some(app_info),
+      is_unified,
     }
   }
 

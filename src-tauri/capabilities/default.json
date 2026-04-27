@@ -3,6 +3,7 @@
   "identifier": "default",
   "description": "Capabilities for main window only (single-window arch)",
   "windows": ["main"],
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "core:window:default",
