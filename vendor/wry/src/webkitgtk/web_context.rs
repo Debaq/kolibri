@@ -40,7 +40,23 @@ impl WebContextImpl {
     // PATCH kolibri: deshabilitar PSON (Process Swap On Navigation) para
     // permitir que múltiples webviews compartan un único WebProcess y reducir
     // RAM. La propiedad es CONSTRUCT_ONLY: solo se puede pasar al builder.
-    let is_unified = data_directory.is_none();
+    // PATCH KOLIBRI: "unified" = WebContext compartido por bar + servicios
+    // no-aislados (vía related_view). En kolibri los servicios aislados
+    // (Google/MS) reciben data_dir = .../sessions/by-host/<host>/N. El bar
+    // de Tauri también recibe data_dir (root del app_data_dir), por lo que
+    // `data_directory.is_none()` daba siempre false y nunca se aplicaba el
+    // patch FFI. Heurística: aislado sólo si el path contiene
+    // "/sessions/by-host/".
+    let is_unified = match data_directory {
+      None => true,
+      Some(p) => !p.to_string_lossy().contains("sessions/by-host/"),
+    };
+    if std::env::var_os("KOLIBRI_LOG_RAM").is_some() {
+      eprintln!(
+        "[wry-patch] new WebContext is_unified={} data_dir={:?} (PSON disabled)",
+        is_unified, data_directory
+      );
+    }
     let mut context_builder =
       WebContext::builder().process_swap_on_cross_site_navigation_enabled(false);
     if let Some(data_directory) = data_directory {

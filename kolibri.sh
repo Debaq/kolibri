@@ -159,8 +159,11 @@ cmd_build() {
     local start=$(date +%s)
     cd "$PROJECT_DIR"
 
-    info "Compilando release completo..."
-    pnpm tauri build
+    info "Limpiando bundles previos..."
+    rm -rf "$BUNDLE_DIR"
+
+    info "Compilando binario release (sin bundles deb/rpm/appimage)..."
+    pnpm tauri build --no-bundle
 
     success "Build completo en $(elapsed $start)"
     collect_artifacts
@@ -171,8 +174,9 @@ cmd_build_debug() {
     cd "$PROJECT_DIR"
     local start=$(date +%s)
 
-    info "Compilando en modo debug..."
-    pnpm tauri build --debug
+    rm -rf "$BUNDLE_DIR"
+    info "Compilando binario debug (sin bundles)..."
+    pnpm tauri build --debug --no-bundle
 
     success "Build debug en $(elapsed $start)"
 }
@@ -208,25 +212,10 @@ collect_artifacts() {
     if [[ -f "$bin" ]]; then
         cp "$bin" "$out/"
         success "Binario en: $out"
-    fi
-
-    if [[ -d "$BUNDLE_DIR" ]]; then
-        local patterns=("Kolibri*" "kolibri*")
-        for type in deb rpm appimage msi nsis dmg; do
-            [[ -d "$BUNDLE_DIR/$type" ]] || continue
-            for pat in "${patterns[@]}"; do
-                for item in "$BUNDLE_DIR/$type"/$pat; do
-                    [[ -e "$item" ]] && cp -r "$item" "$out/" 2>/dev/null || true
-                done
-            done
-        done
-    fi
-
-    if [[ -n "$(ls -A "$out" 2>/dev/null)" ]]; then
         ls -lh "$out" | tail -n +2
     else
         rmdir "$out" 2>/dev/null
-        warn "No se encontraron artefactos"
+        warn "No se encontró binario"
     fi
 }
 
@@ -449,7 +438,7 @@ show_banner() {
     echo "| . \ (_) | | | |_) | |  | |"
     echo "|_|\_\___/|_|_|_.__/|_|  |_|"
     echo -e "${NC}"
-    echo -e "${DIM}  Cliente liviano multi-servicio · v$VERSION"
+    echo -e "${DIM}  Cliente multi-servicio · v$VERSION"
     echo -e "  $(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || echo '-') · $(git -C "$PROJECT_DIR" log --oneline -1 2>/dev/null | cut -c1-50 || echo '-')${NC}"
     echo ""
 }
@@ -461,8 +450,8 @@ show_menu() {
     echo -e "  ${GREEN}3${NC})  Check              ${DIM}svelte-check + cargo check${NC}"
     echo ""
     echo -e "${BOLD} BUILD${NC}"
-    echo -e "  ${YELLOW}4${NC})  Build release      ${DIM}App completa + paquetes${NC}"
-    echo -e "  ${YELLOW}5${NC})  Build debug        ${DIM}Sin optimizaciones${NC}"
+    echo -e "  ${YELLOW}4${NC})  Build release      ${DIM}Solo binario (sin deb/rpm/appimage)${NC}"
+    echo -e "  ${YELLOW}5${NC})  Build debug        ${DIM}Sin optimizaciones, solo binario${NC}"
     echo -e "  ${YELLOW}6${NC})  Build frontend     ${DIM}Solo vite build${NC}"
     echo ""
     echo -e "${BOLD} GESTION${NC}"
@@ -516,7 +505,7 @@ menu_loop() {
 # ── Ayuda CLI ────────────────────────────────────────────────────────────────
 cmd_help() {
     echo -e "${BOLD}${MAGENTA}Kolibri v$VERSION${NC}"
-    echo -e "${DIM}Cliente liviano multi-servicio${NC}"
+    echo -e "${DIM}Cliente multi-servicio${NC}"
     echo ""
     echo -e "${BOLD}Uso:${NC} ./kolibri.sh [comando]"
     echo -e "     ./kolibri.sh          ${DIM}(menu interactivo)${NC}"
@@ -524,7 +513,7 @@ cmd_help() {
     echo "  dev            Tauri + Vite hot reload"
     echo "  dev:web        Solo frontend en navegador"
     echo "  check          svelte-check + cargo check"
-    echo "  build          Build release completo"
+    echo "  build          Build release (solo binario)"
     echo "  build:debug    Build debug"
     echo "  build:frontend Solo frontend"
     echo "  run            Ejecutar binario release"

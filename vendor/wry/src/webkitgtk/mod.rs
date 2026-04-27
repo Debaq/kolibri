@@ -435,6 +435,12 @@ impl InnerWebView {
       // SOLO se aplica si el WebContext es el "unificado" (sin data_directory).
       // Para servicios aislados (Gmail/Outlook con data_directory propio) el
       // patch se omite porque rompe el flow OAuth de Google/MS.
+      if std::env::var_os("KOLIBRI_LOG_RAM").is_some() {
+        eprintln!(
+          "[wry-patch] set_webview_settings is_unified_ctx={} (FFI patch applies={})",
+          is_unified_ctx, is_unified_ctx
+        );
+      }
       if is_unified_ctx { unsafe {
         use std::ffi::CString;
         use std::os::raw::{c_char, c_void};
@@ -466,6 +472,9 @@ impl InnerWebView {
             b"SiteIsolationSharedProcess",
             b"ProcessSwapOnCrossSiteNavigation",
           ];
+          let log_on = std::env::var_os("KOLIBRI_LOG_RAM").is_some();
+          let mut applied_enable = 0usize;
+          let mut applied_disable = 0usize;
           for i in 0..len {
             let f = webkit_feature_list_get(list, i);
             if f.is_null() { continue; }
@@ -474,9 +483,27 @@ impl InnerWebView {
             let id_bytes = std::ffi::CStr::from_ptr(id_ptr).to_bytes();
             if enable.iter().any(|t| *t == id_bytes) {
               webkit_settings_set_feature_enabled(settings_ptr, f, 1);
+              applied_enable += 1;
+              if log_on {
+                if let Ok(s) = std::str::from_utf8(id_bytes) {
+                  eprintln!("[wry-patch] enabled feature: {}", s);
+                }
+              }
             } else if disable.iter().any(|t| *t == id_bytes) {
               webkit_settings_set_feature_enabled(settings_ptr, f, 0);
+              applied_disable += 1;
+              if log_on {
+                if let Ok(s) = std::str::from_utf8(id_bytes) {
+                  eprintln!("[wry-patch] disabled feature: {}", s);
+                }
+              }
             }
+          }
+          if log_on {
+            eprintln!(
+              "[wry-patch] features total={} enabled_match={}/{} disabled_match={}/{}",
+              len, applied_enable, enable.len(), applied_disable, disable.len()
+            );
           }
           webkit_feature_list_unref(list);
         }

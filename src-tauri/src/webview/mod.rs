@@ -64,7 +64,15 @@ pub fn ensure_mounted<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::R
     }
     platform::mount_child(app, svc)?;
     registry.inner.lock().expect("webview state mutex poisoned").push(label);
-    crate::ram_log::snapshot(app, &format!("mount id={}", svc.id));
+    crate::ram_log::snapshot(
+        app,
+        &format!(
+            "mount id={} iso={} host={}",
+            svc.id,
+            svc.isolated_session,
+            crate::services::host_of(&svc.url)
+        ),
+    );
     Ok(())
 }
 
