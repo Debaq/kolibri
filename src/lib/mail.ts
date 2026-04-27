@@ -66,6 +66,16 @@ export const mailApi = {
     invoke<void>("mail_archive", { serviceId, id }),
   delete: (serviceId: string, id: string) =>
     invoke<void>("mail_delete", { serviceId, id }),
+  send: (serviceId: string, msg: OutgoingMessage) =>
+    invoke<void>("mail_send", { serviceId, msg }),
+};
+
+export type OutgoingMessage = {
+  to: string[];
+  cc: string[];
+  subject: string;
+  body_text: string;
+  in_reply_to: string | null;
 };
 
 export function formatDate(ts: number): string {

@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { mailApi, formatDate, type MailHeader, type MailMessage } from "./mail";
+  import {
+    mailApi,
+    formatDate,
+    type MailHeader,
+    type MailMessage,
+    type OutgoingMessage,
+  } from "./mail";
 
   type Props = { serviceId: string };
   let { serviceId }: Props = $props();
@@ -10,20 +16,35 @@
   let selectedId = $state<string | null>(null);
   let loadingList = $state(false);
   let loadingMsg = $state(false);
+  let busy = $state(false);
   let error = $state<string | null>(null);
+
+  // Compose
+  let composing = $state(false);
+  let composeTo = $state("");
+  let composeCc = $state("");
+  let composeSubject = $state("");
+  let composeBody = $state("");
+  let composeReplyTo = $state<string | null>(null); // message_id RFC822
+  let sending = $state(false);
 
   let lastServiceId = "";
 
   $effect(() => {
     if (serviceId !== lastServiceId) {
       lastServiceId = serviceId;
-      headers = [];
-      selected = null;
-      selectedId = null;
-      error = null;
+      reset();
       loadInbox();
     }
   });
+
+  function reset() {
+    headers = [];
+    selected = null;
+    selectedId = null;
+    error = null;
+    composing = false;
+  }
 
   async function loadInbox() {
     loadingList = true;
@@ -41,8 +62,16 @@
     selectedId = h.id;
     selected = null;
     loadingMsg = true;
+    composing = false;
     try {
       selected = await mailApi.getMessage(serviceId, h.id);
+      // Auto-mark-read si estaba sin leer.
+      if (!h.seen) {
+        try {
+          await mailApi.markRead(serviceId, h.id, true);
+          updateHeaderLocal(h.id, { seen: true });
+        } catch (_) { /* ignore */ }
+      }
     } catch (e: any) {
       error = String(e);
     } finally {
@@ -50,17 +79,118 @@
     }
   }
 
-  onDestroy(() => {
-    headers = [];
-    selected = null;
-  });
+  function updateHeaderLocal(id: string, patch: Partial<MailHeader>) {
+    headers = headers.map((h) => (h.id === id ? { ...h, ...patch } : h));
+  }
+
+  function removeHeaderLocal(id: string) {
+    headers = headers.filter((h) => h.id !== id);
+    if (selectedId === id) {
+      selected = null;
+      selectedId = null;
+    }
+  }
+
+  async function toggleRead() {
+    if (!selected || !selectedId) return;
+    const cur = headers.find((h) => h.id === selectedId);
+    const wantRead = !(cur?.seen ?? true);
+    busy = true;
+    try {
+      await mailApi.markRead(serviceId, selectedId, wantRead);
+      updateHeaderLocal(selectedId, { seen: wantRead });
+    } catch (e: any) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function archiveCurrent() {
+    if (!selectedId) return;
+    busy = true;
+    try {
+      await mailApi.archive(serviceId, selectedId);
+      removeHeaderLocal(selectedId);
+    } catch (e: any) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function deleteCurrent() {
+    if (!selectedId) return;
+    busy = true;
+    try {
+      await mailApi.delete(serviceId, selectedId);
+      removeHeaderLocal(selectedId);
+    } catch (e: any) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function startReply(replyAll: boolean) {
+    if (!selected) return;
+    composing = true;
+    composeTo = selected.from_addr;
+    composeCc = replyAll ? selected.cc.join(", ") : "";
+    composeSubject = selected.subject.startsWith("Re: ")
+      ? selected.subject
+      : "Re: " + selected.subject;
+    composeReplyTo = selected.message_id ?? null;
+    // Quote del original.
+    const quoted = selected.body_text
+      .split("\n")
+      .map((l) => "> " + l)
+      .join("\n");
+    composeBody = `\n\n----- Original -----\nDe: ${selected.from_name} <${selected.from_addr}>\nFecha: ${formatDate(selected.date_ts)}\nAsunto: ${selected.subject}\n\n${quoted}`;
+  }
+
+  function cancelCompose() {
+    composing = false;
+    composeTo = "";
+    composeCc = "";
+    composeSubject = "";
+    composeBody = "";
+    composeReplyTo = null;
+  }
+
+  async function sendCompose(e: Event) {
+    e.preventDefault();
+    if (!composeTo.trim() || !composeSubject.trim()) return;
+    sending = true;
+    try {
+      const msg: OutgoingMessage = {
+        to: composeTo.split(",").map((s) => s.trim()).filter(Boolean),
+        cc: composeCc.split(",").map((s) => s.trim()).filter(Boolean),
+        subject: composeSubject,
+        body_text: composeBody,
+        in_reply_to: composeReplyTo,
+      };
+      await mailApi.send(serviceId, msg);
+      cancelCompose();
+    } catch (e: any) {
+      error = String(e);
+    } finally {
+      sending = false;
+    }
+  }
+
+  onDestroy(reset);
+
+  let currentSeen = $derived(
+    selectedId ? headers.find((h) => h.id === selectedId)?.seen ?? true : true,
+  );
 </script>
 
 <div class="mail">
   <header class="mail-head">
-    <button onclick={loadInbox} disabled={loadingList} title="Recargar">↻</button>
+    <button onclick={loadInbox} disabled={loadingList || busy} title="Recargar">↻</button>
     <span class="count">{headers.length} mensajes</span>
-    {#if error}<span class="err">{error}</span>{/if}
+    {#if error}<span class="err" title={error}>{error}</span>{/if}
   </header>
 
   <div class="split">
@@ -82,12 +212,30 @@
             <span class="date">{formatDate(h.date_ts)}</span>
           </div>
           <div class="subject">{h.subject || "(sin asunto)"}</div>
+          {#if h.snippet}<div class="snippet">{h.snippet}</div>{/if}
         </li>
       {/each}
     </ul>
 
     <section class="reader">
-      {#if loadingMsg}
+      {#if composing}
+        <form class="compose" onsubmit={sendCompose}>
+          <div class="compose-head">
+            <span class="compose-title">{composeReplyTo ? "Responder" : "Nuevo"}</span>
+            <button type="button" class="iconbtn" onclick={cancelCompose} disabled={sending}>×</button>
+          </div>
+          <input type="text" placeholder="Para (separado por coma)" bind:value={composeTo} disabled={sending} required />
+          <input type="text" placeholder="Cc" bind:value={composeCc} disabled={sending} />
+          <input type="text" placeholder="Asunto" bind:value={composeSubject} disabled={sending} required />
+          <textarea bind:value={composeBody} disabled={sending} rows="14"></textarea>
+          <div class="compose-actions">
+            <button type="submit" class="primary" disabled={sending || !composeTo.trim() || !composeSubject.trim()}>
+              {sending ? "Enviando…" : "Enviar"}
+            </button>
+            <button type="button" onclick={cancelCompose} disabled={sending}>Cancelar</button>
+          </div>
+        </form>
+      {:else if loadingMsg}
         <div class="placeholder">Cargando mensaje…</div>
       {:else if selected}
         <header class="reader-head">
@@ -101,6 +249,17 @@
               <div><b>Cc:</b> {selected.cc.join(", ")}</div>
             {/if}
             <div class="date">{formatDate(selected.date_ts)}</div>
+          </div>
+          <div class="toolbar">
+            <button class="iconbtn" onclick={() => startReply(false)} disabled={busy}>↩ Responder</button>
+            {#if selected.cc.length || selected.to.length > 1}
+              <button class="iconbtn" onclick={() => startReply(true)} disabled={busy}>↩↩ Resp. todos</button>
+            {/if}
+            <button class="iconbtn" onclick={toggleRead} disabled={busy}>
+              {currentSeen ? "Marcar no leído" : "Marcar leído"}
+            </button>
+            <button class="iconbtn" onclick={archiveCurrent} disabled={busy}>📁 Archivar</button>
+            <button class="iconbtn danger" onclick={deleteCurrent} disabled={busy}>🗑 Eliminar</button>
           </div>
         </header>
         <div class="body">
@@ -154,7 +313,15 @@
   .mail-head button:hover { background: #353535; }
   .mail-head button:disabled { opacity: 0.5; cursor: wait; }
   .count { color: #888; font-size: 12px; }
-  .err { color: #ff6b6b; font-size: 12px; margin-left: auto; }
+  .err {
+    color: #ff6b6b;
+    font-size: 12px;
+    margin-left: auto;
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .split {
     flex: 1;
@@ -200,6 +367,14 @@
     white-space: nowrap;
     margin-top: 2px;
   }
+  .row .snippet {
+    color: #888;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 2px;
+  }
 
   .reader {
     display: flex;
@@ -207,7 +382,7 @@
     overflow: hidden;
   }
   .reader-head {
-    padding: 14px 18px;
+    padding: 14px 18px 10px 18px;
     border-bottom: 1px solid #2a2a2a;
     flex-shrink: 0;
   }
@@ -223,6 +398,26 @@
   }
   .meta b { color: #ccc; font-weight: 600; }
   .meta .date { margin-top: 6px; }
+
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 12px;
+  }
+  .iconbtn {
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #353535;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .iconbtn:hover { background: #353535; }
+  .iconbtn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .iconbtn.danger { color: #ff8888; }
+  .iconbtn.danger:hover { background: #4a1f1f; }
 
   .body {
     flex: 1;
@@ -253,4 +448,65 @@
     justify-content: center;
     color: #666;
   }
+
+  /* Compose */
+  .compose {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 14px 18px;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .compose-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .compose-title {
+    font-weight: 600;
+    color: #e0e0e0;
+  }
+  .compose input,
+  .compose textarea {
+    background: #1d1d1d;
+    border: 1px solid #2f2f2f;
+    border-radius: 4px;
+    padding: 8px 10px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    outline: none;
+  }
+  .compose input:focus,
+  .compose textarea:focus { border-color: #4a8; }
+  .compose textarea {
+    flex: 1;
+    min-height: 200px;
+    line-height: 1.5;
+  }
+  .compose-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .compose-actions button {
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: 1px solid #353535;
+    padding: 7px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .compose-actions button:hover { background: #353535; }
+  .compose-actions button.primary {
+    background: #4a8;
+    border-color: #4a8;
+    color: #fff;
+    font-weight: 600;
+  }
+  .compose-actions button.primary:hover { background: #5b9; }
+  .compose-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

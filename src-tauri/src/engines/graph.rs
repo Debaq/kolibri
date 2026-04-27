@@ -295,21 +295,83 @@ impl MailEngine for GraphEngine {
         Err(MailError::Other("graph.search not implemented (step 8)".into()))
     }
 
-    async fn mark_read(&self, _id: &MessageId, _read: bool) -> Result<()> {
-        Err(MailError::Other("graph.mark_read not implemented (step 6)".into()))
+    async fn mark_read(&self, id: &MessageId, read: bool) -> Result<()> {
+        let url = format!("{}/me/messages/{}", API_BASE, id);
+        let resp = Self::http()
+            .patch(&url)
+            .bearer_auth(&self.access_token)
+            .json(&serde_json::json!({ "isRead": read }))
+            .send()
+            .await
+            .map_err(|e| MailError::Network(e.to_string()))?;
+        check_ok(resp).await
     }
 
-    async fn archive(&self, _id: &MessageId) -> Result<()> {
-        Err(MailError::Other("graph.archive not implemented (step 6)".into()))
+    async fn archive(&self, id: &MessageId) -> Result<()> {
+        let url = format!("{}/me/messages/{}/move", API_BASE, id);
+        let resp = Self::http()
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&serde_json::json!({ "destinationId": "archive" }))
+            .send()
+            .await
+            .map_err(|e| MailError::Network(e.to_string()))?;
+        check_ok(resp).await
     }
 
-    async fn delete(&self, _id: &MessageId) -> Result<()> {
-        Err(MailError::Other("graph.delete not implemented (step 6)".into()))
+    /// Mover a Deleted Items (no DELETE definitivo, alineado con el botón
+    /// "Eliminar" de Outlook web que también va a Trash).
+    async fn delete(&self, id: &MessageId) -> Result<()> {
+        let url = format!("{}/me/messages/{}/move", API_BASE, id);
+        let resp = Self::http()
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&serde_json::json!({ "destinationId": "deleteditems" }))
+            .send()
+            .await
+            .map_err(|e| MailError::Network(e.to_string()))?;
+        check_ok(resp).await
     }
 
-    async fn send(&self, _msg: &OutgoingMessage) -> Result<()> {
-        Err(MailError::Other("graph.send not implemented (step 6)".into()))
+    async fn send(&self, msg: &OutgoingMessage) -> Result<()> {
+        let to_recipients: Vec<_> = msg
+            .to
+            .iter()
+            .map(|a| serde_json::json!({ "emailAddress": { "address": a } }))
+            .collect();
+        let cc_recipients: Vec<_> = msg
+            .cc
+            .iter()
+            .map(|a| serde_json::json!({ "emailAddress": { "address": a } }))
+            .collect();
+        let payload = serde_json::json!({
+            "message": {
+                "subject": msg.subject,
+                "body": { "contentType": "Text", "content": msg.body_text },
+                "toRecipients": to_recipients,
+                "ccRecipients": cc_recipients,
+            },
+            "saveToSentItems": true,
+        });
+        let url = format!("{}/me/sendMail", API_BASE);
+        let resp = Self::http()
+            .post(&url)
+            .bearer_auth(&self.access_token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| MailError::Network(e.to_string()))?;
+        check_ok(resp).await
     }
+}
+
+async fn check_ok(resp: reqwest::Response) -> Result<()> {
+    if resp.status().is_success() {
+        return Ok(());
+    }
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    Err(MailError::Network(format!("graph {}: {}", status, body)))
 }
 
 // ────────── OAuth flow + token management ──────────

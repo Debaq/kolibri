@@ -239,20 +239,123 @@ impl MailEngine for ImapEngine {
         Err(MailError::Other("imap.search not implemented (step 8)".into()))
     }
 
-    async fn mark_read(&self, _id: &MessageId, _read: bool) -> Result<()> {
-        Err(MailError::Other("imap.mark_read not implemented (step 6)".into()))
+    async fn mark_read(&self, id: &MessageId, read: bool) -> Result<()> {
+        let uid: u32 = id
+            .parse()
+            .map_err(|_| MailError::Parse("uid no numérico".into()))?;
+        let mut session = login(&self.config.email, &self.access_token).await?;
+        session
+            .select("INBOX")
+            .await
+            .map_err(|e| MailError::Network(format!("select: {}", e)))?;
+        let cmd = if read {
+            "+FLAGS (\\Seen)"
+        } else {
+            "-FLAGS (\\Seen)"
+        };
+        {
+            let mut stream = session
+                .uid_store(uid.to_string(), cmd)
+                .await
+                .map_err(|e| MailError::Network(format!("uid_store: {}", e)))?;
+            while let Some(_) = stream.next().await {}
+        }
+        let _ = session.logout().await;
+        Ok(())
     }
 
-    async fn archive(&self, _id: &MessageId) -> Result<()> {
-        Err(MailError::Other("imap.archive not implemented (step 6)".into()))
+    /// Archivar en Gmail = sacar el label `\\Inbox`. El mensaje queda en
+    /// All Mail. Usa la extensión X-GM-LABELS.
+    async fn archive(&self, id: &MessageId) -> Result<()> {
+        let uid: u32 = id
+            .parse()
+            .map_err(|_| MailError::Parse("uid no numérico".into()))?;
+        let mut session = login(&self.config.email, &self.access_token).await?;
+        session
+            .select("INBOX")
+            .await
+            .map_err(|e| MailError::Network(format!("select: {}", e)))?;
+        {
+            let mut stream = session
+                .uid_store(uid.to_string(), "-X-GM-LABELS (\\\\Inbox)")
+                .await
+                .map_err(|e| MailError::Network(format!("uid_store labels: {}", e)))?;
+            while let Some(_) = stream.next().await {}
+        }
+        let _ = session.logout().await;
+        Ok(())
     }
 
-    async fn delete(&self, _id: &MessageId) -> Result<()> {
-        Err(MailError::Other("imap.delete not implemented (step 6)".into()))
+    /// Mover a [Gmail]/Trash usando UID MOVE (extensión Gmail).
+    async fn delete(&self, id: &MessageId) -> Result<()> {
+        let uid: u32 = id
+            .parse()
+            .map_err(|_| MailError::Parse("uid no numérico".into()))?;
+        let mut session = login(&self.config.email, &self.access_token).await?;
+        session
+            .select("INBOX")
+            .await
+            .map_err(|e| MailError::Network(format!("select: {}", e)))?;
+        session
+            .uid_mv(uid.to_string(), "[Gmail]/Trash")
+            .await
+            .map_err(|e| MailError::Network(format!("uid_mv: {}", e)))?;
+        let _ = session.logout().await;
+        Ok(())
     }
 
-    async fn send(&self, _msg: &OutgoingMessage) -> Result<()> {
-        Err(MailError::Other("imap.send not implemented (step 6)".into()))
+    async fn send(&self, msg: &OutgoingMessage) -> Result<()> {
+        use lettre::message::header::ContentType;
+        use lettre::transport::smtp::authentication::{Credentials, Mechanism};
+        use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+        let from_addr: lettre::Address = self
+            .config
+            .email
+            .parse()
+            .map_err(|e: lettre::address::AddressError| MailError::Parse(e.to_string()))?;
+        let mut builder = Message::builder()
+            .from(lettre::message::Mailbox::new(None, from_addr))
+            .subject(&msg.subject);
+        for t in &msg.to {
+            let addr: lettre::Address = t
+                .parse()
+                .map_err(|e: lettre::address::AddressError| MailError::Parse(e.to_string()))?;
+            builder = builder.to(lettre::message::Mailbox::new(None, addr));
+        }
+        for c in &msg.cc {
+            let addr: lettre::Address = c
+                .parse()
+                .map_err(|e: lettre::address::AddressError| MailError::Parse(e.to_string()))?;
+            builder = builder.cc(lettre::message::Mailbox::new(None, addr));
+        }
+        if let Some(irt) = &msg.in_reply_to {
+            // El frontend pasa el `message_id` (RFC822 Message-ID) cuando
+            // dispara reply, no el UID. Si por error mandó un UID (numérico),
+            // ignorar para no romper el header.
+            if irt.contains('@') {
+                builder = builder.in_reply_to(irt.clone());
+            }
+        }
+        let email = builder
+            .header(ContentType::TEXT_PLAIN)
+            .body(msg.body_text.clone())
+            .map_err(|e| MailError::Other(format!("build msg: {}", e)))?;
+
+        // XOAUTH2 SMTP. lettre arma el SASL string desde (user, access_token)
+        // cuando el mecanismo es Xoauth2.
+        let creds = Credentials::new(self.config.email.clone(), self.access_token.clone());
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(SMTP_HOST)
+            .map_err(|e| MailError::Network(format!("smtp relay: {}", e)))?
+            .port(SMTP_PORT)
+            .credentials(creds)
+            .authentication(vec![Mechanism::Xoauth2])
+            .build();
+        mailer
+            .send(email)
+            .await
+            .map_err(|e| MailError::Network(format!("smtp send: {}", e)))?;
+        Ok(())
     }
 }
 
