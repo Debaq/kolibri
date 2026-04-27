@@ -2311,6 +2311,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "thiserror 2.0.18",
+ "time",
  "tiny_http",
  "tokio",
  "url",

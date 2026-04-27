@@ -66,7 +66,11 @@ async fn engine_for<R: tauri::Runtime>(
                 .graph
                 .clone()
                 .ok_or_else(|| "graph config missing".to_string())?;
-            Ok(Box::new(engines::graph::GraphEngine::new(cfg)))
+            if !cfg.authorized {
+                return Err("servicio Graph sin autorizar (corré graph_oauth_authorize)".into());
+            }
+            let token = engines::graph::current_access_token(app, service_id).await?;
+            Ok(Box::new(engines::graph::GraphEngine::new(cfg, token)))
         }
     }
 }
@@ -293,6 +297,7 @@ pub fn run() {
             services::list_services,
             services::add_service,
             services::add_imap_service,
+            services::add_graph_service,
             services::remove_service,
             services::reorder_services,
             services::update_service,
@@ -326,6 +331,8 @@ pub fn run() {
             mail_search,
             engines::imap::imap_oauth_authorize,
             engines::imap::imap_oauth_revoke,
+            engines::graph::graph_oauth_authorize,
+            engines::graph::graph_oauth_revoke,
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]

@@ -340,6 +340,47 @@ pub fn add_service<R: Runtime>(
     Ok(svc)
 }
 
+/// Crea un servicio engine=Graph (Outlook M365). client_id vacío usa el
+/// public client de Microsoft (Graph PowerShell). tenant default = "common".
+/// Tras crear, UI debe disparar `graph_oauth_authorize`.
+#[tauri::command]
+pub fn add_graph_service<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    name: String,
+    client_id: Option<String>,
+    tenant: Option<String>,
+    color: Option<String>,
+) -> Result<Service, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let svc = Service {
+        id: id.clone(),
+        name,
+        url: String::new(),
+        icon: None,
+        color,
+        user_agent: None,
+        session_slot: 0,
+        keep_alive: false,
+        isolated_session: false,
+        engine: ServiceEngine::Graph,
+        imap: None,
+        graph: Some(GraphConfig {
+            email: String::new(),
+            client_id: client_id.unwrap_or_default(),
+            tenant: tenant.unwrap_or_else(|| "common".into()),
+            authorized: false,
+        }),
+    };
+    {
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
+        g.services.push(svc.clone());
+        save(&app, &g).map_err(|e| e.to_string())?;
+    }
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(svc)
+}
+
 /// Crea un servicio engine=Imap. No abre webview. Tras esto la UI debe
 /// disparar `imap_oauth_authorize` para completar la auth.
 #[tauri::command]

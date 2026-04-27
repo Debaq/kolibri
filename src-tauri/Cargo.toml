@@ -38,6 +38,7 @@ tiny_http = "0.12"
 async-trait = "0.1"
 keyring = "3"
 thiserror = "2"
+time = { version = "0.3", default-features = false, features = ["parsing", "formatting", "macros"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
