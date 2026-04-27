@@ -21,13 +21,22 @@
     isolated_session?: boolean;
   };
 
-  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder" | "services_admin";
+  type Mode = "tabs" | "picker" | "custom" | "remove" | "settings" | "edit" | "shortcuts" | "reorder" | "services_admin" | "imap_form" | "graph_form";
 
   let services = $state<Service[]>([]);
   let activeId = $state<string | null>(null);
   let mode = $state<Mode>("tabs");
   let customName = $state("");
   let customUrl = $state("");
+  // Forms para engines nativos.
+  let imapName = $state("Gmail IMAP");
+  let imapClientId = $state("");
+  let imapClientSecret = $state("");
+  let graphName = $state("Outlook");
+  let graphClientId = $state("");
+  let graphTenant = $state("common");
+  let nativeBusy = $state(false);
+  let nativeError = $state("");
   let pendingRemoveId = $state<string | null>(null);
   let editingId = $state<string | null>(null);
   let editName = $state("");
@@ -303,6 +312,61 @@
     await refresh();
     await invoke("switch_service", { id: created.id });
     activeId = created.id;
+  }
+
+  async function addImap(e: Event) {
+    e.preventDefault();
+    if (!imapName.trim() || !imapClientId.trim() || !imapClientSecret.trim()) return;
+    nativeBusy = true;
+    nativeError = "";
+    try {
+      const created = await invoke<Service>("add_imap_service", {
+        name: imapName.trim(),
+        clientId: imapClientId.trim(),
+        clientSecret: imapClientSecret.trim(),
+        color: null,
+      });
+      // Dispara navegador → el flow puede demorar hasta 5min de timeout server-side.
+      await invoke("imap_oauth_authorize", { serviceId: created.id });
+      imapName = "Gmail IMAP";
+      imapClientId = "";
+      imapClientSecret = "";
+      mode = "tabs";
+      await refresh();
+      await invoke("switch_service", { id: created.id });
+      activeId = created.id;
+    } catch (err: any) {
+      nativeError = String(err);
+    } finally {
+      nativeBusy = false;
+    }
+  }
+
+  async function addGraph(e: Event) {
+    e.preventDefault();
+    if (!graphName.trim()) return;
+    nativeBusy = true;
+    nativeError = "";
+    try {
+      const created = await invoke<Service>("add_graph_service", {
+        name: graphName.trim(),
+        clientId: graphClientId.trim() || null,
+        tenant: graphTenant.trim() || "common",
+        color: null,
+      });
+      await invoke("graph_oauth_authorize", { serviceId: created.id });
+      graphName = "Outlook";
+      graphClientId = "";
+      graphTenant = "common";
+      mode = "tabs";
+      await refresh();
+      await invoke("switch_service", { id: created.id });
+      activeId = created.id;
+    } catch (err: any) {
+      nativeError = String(err);
+    } finally {
+      nativeBusy = false;
+    }
   }
 
   async function addCustom(e: Event) {
@@ -729,7 +793,78 @@
         <span class="pick-icon" style:background="#555">…</span>
         <span class="pick-name">Otra</span>
       </button>
+      <span class="sep"></span>
+      <button class="pick custom-btn" onclick={() => { nativeError = ""; mode = "imap_form"; }} title="Gmail vía IMAP+OAuth (cliente nativo)">
+        <span class="pick-icon" style:background="#ea4335">✉</span>
+        <span class="pick-name">Gmail IMAP</span>
+      </button>
+      <button class="pick custom-btn" onclick={() => { nativeError = ""; mode = "graph_form"; }} title="Outlook M365 vía Microsoft Graph (cliente nativo)">
+        <span class="pick-icon" style:background="#0078d4">✉</span>
+        <span class="pick-name">Outlook (Graph)</span>
+      </button>
     </div>
+  {:else if mode === "imap_form"}
+    <button class="add cancel" onclick={() => (mode = "picker")} title="Volver" disabled={nativeBusy}>×</button>
+    <form class="custom-form imap-form" onsubmit={addImap}>
+      <input
+        type="text"
+        placeholder="Nombre"
+        bind:value={imapName}
+        data-no-drag
+        required
+        disabled={nativeBusy}
+      />
+      <input
+        type="text"
+        placeholder="client_id (...apps.googleusercontent.com)"
+        bind:value={imapClientId}
+        data-no-drag
+        required
+        disabled={nativeBusy}
+      />
+      <input
+        type="password"
+        placeholder="client_secret (GOCSPX-...)"
+        bind:value={imapClientSecret}
+        data-no-drag
+        required
+        disabled={nativeBusy}
+      />
+      <button type="submit" class="custom-go" disabled={nativeBusy}>
+        {nativeBusy ? "Autorizando…" : "Crear y autorizar"}
+      </button>
+      {#if nativeError}<span class="err-msg" title={nativeError}>{nativeError}</span>{/if}
+    </form>
+  {:else if mode === "graph_form"}
+    <button class="add cancel" onclick={() => (mode = "picker")} title="Volver" disabled={nativeBusy}>×</button>
+    <form class="custom-form imap-form" onsubmit={addGraph}>
+      <input
+        type="text"
+        placeholder="Nombre"
+        bind:value={graphName}
+        data-no-drag
+        required
+        disabled={nativeBusy}
+      />
+      <input
+        type="text"
+        placeholder="client_id (vacío = Microsoft Graph PowerShell público)"
+        bind:value={graphClientId}
+        data-no-drag
+        disabled={nativeBusy}
+      />
+      <input
+        type="text"
+        placeholder="tenant (common, organizations, o GUID)"
+        bind:value={graphTenant}
+        data-no-drag
+        disabled={nativeBusy}
+      />
+      <button type="submit" class="custom-go" disabled={nativeBusy}>
+        {nativeBusy ? "Autorizando…" : "Crear y autorizar"}
+      </button>
+      {#if nativeError}<span class="err-msg" title={nativeError}>{nativeError}</span>{/if}
+    </form>
   {:else if mode === "custom"}
     <button class="add cancel" onclick={cancelPicker} title="Cancelar">×</button>
     <form class="custom-form" onsubmit={addCustom}>
@@ -1148,6 +1283,22 @@
     font-size: 12px;
   }
   .custom-go:hover { background: #5b9; }
+  .custom-go:disabled { background: #555; cursor: wait; opacity: 0.7; }
+
+  .imap-form input { width: auto; }
+  .imap-form input:first-of-type { width: 130px; }
+  .imap-form input:nth-of-type(2) { flex: 1; min-width: 240px; }
+  .imap-form input:nth-of-type(3) { flex: 1; min-width: 220px; }
+  .imap-form input:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .err-msg {
+    color: #ff6b6b;
+    font-size: 11px;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .spacer { flex: 1; min-width: 12px; height: 100%; }
 
