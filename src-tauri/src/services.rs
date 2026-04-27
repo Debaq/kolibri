@@ -27,45 +27,30 @@ impl Default for ServiceEngine {
     }
 }
 
-/// Tokens OAuth2 persistidos. `expires_at` en UNIX seconds.
-/// El refresh_token se guarda en keyring (no en services.json). Acá solo va
-/// el handle/key (`refresh_token_ref`) para recuperarlo.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OAuthTokens {
-    #[serde(default)]
-    pub access_token: String,
-    #[serde(default)]
-    pub expires_at: i64,
-    #[serde(default)]
-    pub scope: String,
-    /// Identificador para buscar el refresh_token en keyring del SO.
-    /// Formato: "kolibri:imap:{service_id}" o "kolibri:graph:{service_id}".
-    #[serde(default)]
-    pub refresh_token_ref: String,
-}
-
-/// Config para engine IMAP (Gmail). Hosts hardcoded a Gmail en MVP.
+/// Config para engine IMAP (Gmail). Tokens OAuth2 viven en keyring del SO
+/// (kind="imap", account=service_id), NO en services.json.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ImapConfig {
     pub email: String,
-    /// Client ID OAuth registrado por el user en su Google Cloud Console.
+    /// Client ID OAuth registrado por el user en Google Cloud Console.
     pub client_id: String,
     pub client_secret: String,
+    /// True cuando el flow OAuth ya se completó (tokens en keyring).
     #[serde(default)]
-    pub tokens: OAuthTokens,
+    pub authorized: bool,
 }
 
-/// Config para engine Graph (Outlook M365).
+/// Config para engine Graph (Outlook M365). Tokens en keyring (kind="graph").
 /// Default `client_id` = Microsoft Graph PowerShell (pre-aprobado, sin Azure setup).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GraphConfig {
     pub email: String,
     pub client_id: String,
-    /// Tenant: "common" para multi-tenant, GUID específico para empresarial fijo.
+    /// Tenant: "common" multi-tenant, GUID específico para empresarial fijo.
     #[serde(default = "graph_default_tenant")]
     pub tenant: String,
     #[serde(default)]
-    pub tokens: OAuthTokens,
+    pub authorized: bool,
 }
 
 fn graph_default_tenant() -> String {
@@ -351,6 +336,46 @@ pub fn add_service<R: Runtime>(
         save(&app, &g).map_err(|e| e.to_string())?;
     }
     webview::ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
+    let _ = app.emit("kolibri:services_changed", ());
+    Ok(svc)
+}
+
+/// Crea un servicio engine=Imap. No abre webview. Tras esto la UI debe
+/// disparar `imap_oauth_authorize` para completar la auth.
+#[tauri::command]
+pub fn add_imap_service<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    name: String,
+    client_id: String,
+    client_secret: String,
+    color: Option<String>,
+) -> Result<Service, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let svc = Service {
+        id: id.clone(),
+        name,
+        url: String::new(),
+        icon: None,
+        color,
+        user_agent: None,
+        session_slot: 0,
+        keep_alive: false,
+        isolated_session: false,
+        engine: ServiceEngine::Imap,
+        imap: Some(ImapConfig {
+            email: String::new(),
+            client_id,
+            client_secret,
+            authorized: false,
+        }),
+        graph: None,
+    };
+    {
+        let mut g = state.inner.lock().expect("AppState mutex poisoned");
+        g.services.push(svc.clone());
+        save(&app, &g).map_err(|e| e.to_string())?;
+    }
     let _ = app.emit("kolibri:services_changed", ());
     Ok(svc)
 }

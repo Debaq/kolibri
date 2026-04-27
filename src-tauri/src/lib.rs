@@ -284,6 +284,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             services::list_services,
             services::add_service,
+            services::add_imap_service,
             services::remove_service,
             services::reorder_services,
             services::update_service,
@@ -315,6 +316,8 @@ pub fn run() {
             mail_delete,
             mail_send,
             mail_search,
+            engines::imap::imap_oauth_authorize,
+            engines::imap::imap_oauth_revoke,
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
