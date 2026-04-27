@@ -68,13 +68,15 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     vbox.set_margin_end(0);
     vbox.set_spacing(0);
 
-    // Placeholder vía webview HTML (static/placeholder.html con el logo).
+    // Content webview = ruta SvelteKit /content. Renderiza logo cuando no hay
+    // svc activo o cuando el activo es engine=webview (en ese caso queda
+    // tapado). Renderiza UI de mail nativo cuando el activo es engine=imap/graph.
     // Se monta como child del vbox debajo del bar, expand+fill, y
     // apply_active() lo muestra/oculta. Más robusto que GtkImage (que
     // antes no renderizaba en algunos themes/PixbufLoader).
     let placeholder_builder = WebviewBuilder::new(
         PLACEHOLDER_LABEL,
-        WebviewUrl::App("placeholder.html".into()),
+        WebviewUrl::App("content.html".into()),
     )
     .disable_drag_drop_handler();
     // En GtkBox los pos/size son ignorados — placeholder.
@@ -233,12 +235,21 @@ pub fn apply_active<R: Runtime>(
         });
     }
 
-    // Placeholder webview: visible cuando no hay svc activo, oculto si lo hay.
-    let any_active = active.is_some();
+    // Content webview: visible cuando no hay svc activo O cuando el activo
+    // es engine no-webview (imap/graph) — en ese caso la UI nativa de mail
+    // se renderiza adentro del content webview.
+    let webview_active = active
+        .and_then(|id| {
+            services
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| matches!(s.engine, crate::services::ServiceEngine::Webview))
+        })
+        .unwrap_or(false);
     if let Some(ph) = app.get_webview(PLACEHOLDER_LABEL) {
         let _ = ph.with_webview(move |pw| {
             let widget = pw.inner();
-            if any_active {
+            if webview_active {
                 widget.hide();
             } else {
                 widget.show();

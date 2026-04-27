@@ -112,8 +112,12 @@ pub fn switch_service<R: Runtime>(app: AppHandle<R>, id: Option<String>) -> Resu
     };
     // Lazy mount: si la pestaña destino no está montada (recién arrancada o
     // suspendida), la montamos ahora. ensure_mounted ya es idempotente.
+    // Para engines no-webview (Imap/Graph) no hay nada que montar — la UI
+    // vive en el content webview que reacciona al evento active_changed.
     if let Some(svc) = svc_to_mount {
-        ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
+        if matches!(svc.engine, crate::services::ServiceEngine::Webview) {
+            ensure_mounted(&app, &svc).map_err(|e| e.to_string())?;
+        }
     }
     set_active(&app, id.as_deref()).map_err(|e| e.to_string())?;
     crate::ram_log::snapshot(&app, &format!("switch to={}", id.as_deref().unwrap_or("-")));

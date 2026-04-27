@@ -50,7 +50,7 @@ fn mount_placeholder<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
     let builder = WebviewBuilder::new(
         PLACEHOLDER_LABEL,
-        WebviewUrl::App("placeholder.html".into()),
+        WebviewUrl::App("content.html".into()),
     )
     .disable_drag_drop_handler();
     let (pos, size) = service_bounds(app);
@@ -113,10 +113,19 @@ pub fn apply_active<R: Runtime>(
             let _ = wv.set_position(LogicalPosition::new(OFFSCREEN_X, pos.y));
         }
     }
-    // Placeholder: visible cuando no hay svc activo, offscreen si lo hay.
+    // Content webview: visible cuando no hay svc activo o cuando el activo
+    // es engine no-webview (imap/graph). UI nativa de mail vive adentro.
+    let webview_active = active
+        .and_then(|id| {
+            services
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| matches!(s.engine, crate::services::ServiceEngine::Webview))
+        })
+        .unwrap_or(false);
     if let Some(ph) = app.get_webview(PLACEHOLDER_LABEL) {
         let _ = ph.set_size(size);
-        if active.is_some() {
+        if webview_active {
             let _ = ph.set_position(LogicalPosition::new(OFFSCREEN_X, pos.y));
         } else {
             let _ = ph.set_position(pos);
