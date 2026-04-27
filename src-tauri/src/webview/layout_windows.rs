@@ -5,7 +5,7 @@ use tauri::{
 
 use crate::services::{data_dir_for_service, Service};
 
-use super::{label_for, scripts, BAR_HEIGHT};
+use super::{label_for, scripts, BAR_HEIGHT, PLACEHOLDER_LABEL};
 
 const OFFSCREEN_X: f64 = -20000.0;
 
@@ -28,11 +28,33 @@ fn service_bounds<R: Runtime>(app: &AppHandle<R>) -> (LogicalPosition<f64>, Logi
 }
 
 pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    if let Some(main) = app.get_webview_window("main") {
+    // Importante: no redimensionar la WebviewWindow — eso encoge la ventana
+    // del SO entera a 56px (síntoma: solo barra superior visible, app
+    // inutilizable). Hay que ajustar el sub-bounds del Webview dentro de la
+    // ventana, igual que con los children.
+    if let Some(main) = app.get_webview("main") {
         let (w, _h) = window_size(app);
         let _ = main.set_position(LogicalPosition::new(0.0, 0.0));
         let _ = main.set_size(LogicalSize::new(w, BAR_HEIGHT as f64));
     }
+    mount_placeholder(app)?;
+    Ok(())
+}
+
+fn mount_placeholder<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let Some(window) = app.get_window("main") else {
+        return Ok(());
+    };
+    if app.get_webview(PLACEHOLDER_LABEL).is_some() {
+        return Ok(());
+    }
+    let builder = WebviewBuilder::new(
+        PLACEHOLDER_LABEL,
+        WebviewUrl::App("placeholder.html".into()),
+    )
+    .disable_drag_drop_handler();
+    let (pos, size) = service_bounds(app);
+    window.add_child(builder, pos, size)?;
     Ok(())
 }
 
@@ -91,8 +113,17 @@ pub fn apply_active<R: Runtime>(
             let _ = wv.set_position(LogicalPosition::new(OFFSCREEN_X, pos.y));
         }
     }
+    // Placeholder: visible cuando no hay svc activo, offscreen si lo hay.
+    if let Some(ph) = app.get_webview(PLACEHOLDER_LABEL) {
+        let _ = ph.set_size(size);
+        if active.is_some() {
+            let _ = ph.set_position(LogicalPosition::new(OFFSCREEN_X, pos.y));
+        } else {
+            let _ = ph.set_position(pos);
+        }
+    }
     // También reposicionar bar (main webview) por si la ventana cambió de tamaño.
-    if let Some(main) = app.get_webview_window("main") {
+    if let Some(main) = app.get_webview("main") {
         let (w, _h) = window_size(app);
         let _ = main.set_size(LogicalSize::new(w, BAR_HEIGHT as f64));
         let _ = main.set_position(LogicalPosition::new(0.0, 0.0));

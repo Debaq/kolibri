@@ -6,20 +6,14 @@ use tauri::{
 use crate::services::{data_dir_for_service, Service};
 
 use super::{
-    label_for, scripts, BarWebViewHandle, GtkMainThreadView, GtkMainThreadWidget,
-    HomePlaceholderHandle, BAR_HEIGHT,
+    label_for, scripts, BarWebViewHandle, GtkMainThreadView, BAR_HEIGHT, PLACEHOLDER_LABEL,
 };
-
-const LOGO_PNG: &[u8] = include_bytes!("../../../static/logo.png");
 
 pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Registrar el handle compartido del WebView del bar antes de capturarlo.
     // Idempotente vía try_state: si ya está, no lo pisamos.
     if app.try_state::<BarWebViewHandle>().is_none() {
         app.manage(BarWebViewHandle::default());
-    }
-    if app.try_state::<HomePlaceholderHandle>().is_none() {
-        app.manage(HomePlaceholderHandle::default());
     }
 
     let Some(window) = app.get_window("main") else {
@@ -74,50 +68,21 @@ pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     vbox.set_margin_end(0);
     vbox.set_spacing(0);
 
-    // Placeholder con el logo, que ocupa el área de apps cuando no hay
-    // servicio activo. Se inserta debajo del bar y se muestra/oculta desde
-    // `apply_active`. Nunca toca el bar.
-    let placeholder = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    placeholder.set_hexpand(true);
-    placeholder.set_vexpand(true);
-    placeholder.set_halign(gtk::Align::Fill);
-    placeholder.set_valign(gtk::Align::Fill);
-    let loader = gtk::gdk_pixbuf::PixbufLoader::new();
-    if loader.write(LOGO_PNG).is_ok() && loader.close().is_ok() {
-        if let Some(pb) = loader.pixbuf() {
-            // Escalar a max ~320px lado mayor (logo.png es 1551x1658).
-            let (w, h) = (pb.width(), pb.height());
-            let max = 320i32;
-            let (nw, nh) = if w >= h {
-                (max, (h * max).max(1) / w.max(1))
-            } else {
-                ((w * max).max(1) / h.max(1), max)
-            };
-            let scaled = pb
-                .scale_simple(nw, nh, gtk::gdk_pixbuf::InterpType::Bilinear)
-                .unwrap_or(pb);
-            let img = gtk::Image::from_pixbuf(Some(&scaled));
-            img.set_halign(gtk::Align::Center);
-            img.set_valign(gtk::Align::Center);
-            img.set_hexpand(true);
-            img.set_vexpand(true);
-            placeholder.pack_start(&img, true, true, 0);
-        } else {
-            eprintln!("[kolibri] placeholder: PixbufLoader.pixbuf() devolvió None");
-        }
-    } else {
-        eprintln!("[kolibri] placeholder: PixbufLoader.write/close falló");
-    }
-    vbox.pack_start(&placeholder, true, true, 0);
-    placeholder.show_all();
-    if let Some(handle) = app.try_state::<HomePlaceholderHandle>() {
-        let mut g = handle
-            .inner()
-            .0
-            .lock()
-            .expect("HomePlaceholderHandle mutex poisoned");
-        *g = Some(GtkMainThreadWidget::new(placeholder.upcast::<gtk::Widget>()));
-    }
+    // Placeholder vía webview HTML (static/placeholder.html con el logo).
+    // Se monta como child del vbox debajo del bar, expand+fill, y
+    // apply_active() lo muestra/oculta. Más robusto que GtkImage (que
+    // antes no renderizaba en algunos themes/PixbufLoader).
+    let placeholder_builder = WebviewBuilder::new(
+        PLACEHOLDER_LABEL,
+        WebviewUrl::App("placeholder.html".into()),
+    )
+    .disable_drag_drop_handler();
+    // En GtkBox los pos/size son ignorados — placeholder.
+    window.add_child(
+        placeholder_builder,
+        LogicalPosition::new(0.0, BAR_HEIGHT as f64),
+        LogicalSize::new(800.0, 600.0),
+    )?;
 
     // Capturar el `webkit2gtk::WebView` del bar para reutilizarlo como
     // `related_view` de cada servicio → todos comparten el mismo WebProcess.
@@ -268,22 +233,17 @@ pub fn apply_active<R: Runtime>(
         });
     }
 
-    // Mostrar/ocultar el placeholder del logo en el área de apps según haya
-    // o no servicio activo. Bar nunca se modifica.
+    // Placeholder webview: visible cuando no hay svc activo, oculto si lo hay.
     let any_active = active.is_some();
-    if let Some(handle) = app.try_state::<HomePlaceholderHandle>() {
-        let img_opt = handle
-            .inner()
-            .0
-            .lock()
-            .expect("HomePlaceholderHandle mutex poisoned")
-            .as_ref()
-            .map(|w| w.clone_ref());
-        if let Some(wrapped) = img_opt {
-            let _ = app.run_on_main_thread(move || {
-                if any_active { wrapped.hide(); } else { wrapped.show(); }
-            });
-        }
+    if let Some(ph) = app.get_webview(PLACEHOLDER_LABEL) {
+        let _ = ph.with_webview(move |pw| {
+            let widget = pw.inner();
+            if any_active {
+                widget.hide();
+            } else {
+                widget.show();
+            }
+        });
     }
 
     Ok(())

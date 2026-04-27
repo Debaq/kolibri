@@ -1,6 +1,6 @@
 [package]
 name = "kolibri"
-version = "0.1.5"
+version = "0.1.6"
 description = "Kolibri - cliente liviano multi-servicio"
 authors = ["Debaq"]
 edition = "2021"

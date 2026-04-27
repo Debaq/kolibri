@@ -5,6 +5,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use crate::services::{AppState, Service};
 
 pub const BAR_HEIGHT: u32 = 56;
+pub const PLACEHOLDER_LABEL: &str = "kolibri__placeholder";
 
 pub fn label_for(id: &str) -> String {
     format!("svc__{}", id)
@@ -50,27 +51,6 @@ unsafe impl Sync for GtkMainThreadView {}
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct BarWebViewHandle(pub Mutex<Option<GtkMainThreadView>>);
-
-/// Wrapper Send+Sync sobre `gtk::Widget`. Campo privado para evitar que
-/// disjoint-capture de Rust 2021 vea el `gtk::Widget` (no Send) directo —
-/// los closures sólo pueden acceder vía métodos, capturando el wrapper entero.
-#[cfg(target_os = "linux")]
-pub struct GtkMainThreadWidget(gtk::Widget);
-#[cfg(target_os = "linux")]
-impl GtkMainThreadWidget {
-    pub fn new(w: gtk::Widget) -> Self { Self(w) }
-    pub fn show(&self) { gtk::prelude::WidgetExt::show(&self.0); }
-    pub fn hide(&self) { gtk::prelude::WidgetExt::hide(&self.0); }
-    pub fn clone_ref(&self) -> Self { Self(self.0.clone()) }
-}
-#[cfg(target_os = "linux")]
-unsafe impl Send for GtkMainThreadWidget {}
-#[cfg(target_os = "linux")]
-unsafe impl Sync for GtkMainThreadWidget {}
-
-#[cfg(target_os = "linux")]
-#[derive(Default)]
-pub struct HomePlaceholderHandle(pub Mutex<Option<GtkMainThreadWidget>>);
 
 pub fn setup_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     platform::setup_main_window(app)
