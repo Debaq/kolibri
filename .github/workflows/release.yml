@@ -74,8 +74,24 @@ jobs:
 
             Descargar binario según OS abajo. Ver [README](https://github.com/Debaq/kolibri#instalación) para instrucciones.
 
-            **Linux**: AppImage (portable, corre en cualquier distro)
+            **Linux**: AppImage (portable, corre en cualquier distro) o `.bin` (binario crudo, requiere libwebkit2gtk-4.1 instalada)
             **Windows**: `.msi` / `.exe` (NSIS)
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Upload raw Linux binary
+        if: matrix.platform == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BIN_SRC="src-tauri/target/release/kolibri"
+          BIN_OUT="kolibri-${{ github.ref_name }}-linux-x86_64.bin"
+          if [ ! -f "$BIN_SRC" ]; then
+            echo "Binario no encontrado en $BIN_SRC"
+            ls -la src-tauri/target/release/ | head
+            exit 1
+          fi
+          cp "$BIN_SRC" "$BIN_OUT"
+          chmod +x "$BIN_OUT"
+          gh release upload "${{ github.ref_name }}" "$BIN_OUT" --clobber

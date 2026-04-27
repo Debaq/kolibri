@@ -82,6 +82,11 @@ Extender `Service` con campos opcionales y aplicarlos en `mount_child`:
 - [x] **Limpiar cookies/cache** desde Settings, por servicio (cmd `clear_service_session`, botón en edit modal)
 - [x] **Logout** un servicio sin perderlo de la lista (mismo cmd, botón "Cerrar sesión" en edit modal)
 
+## Release 0.1.5 (2026-04-27) — fix EGL en AppImage + binario raw
+
+- [x] **Fix `EGL_BAD_PARAMETER`** en `main.rs`: setear `WEBKIT_DISABLE_DMABUF_RENDERER=1` y `WEBKIT_DISABLE_COMPOSITING_MODE=1` antes de inicializar Tauri en Linux. WebKitGTK 2.44+ usa DMA-BUF renderer por default que aborta en sistemas sin EGL/DRM correctamente configurado (NVIDIA propietario, Wayland sin compositor compatible). Usuario puede sobrescribir vía env si su sistema sí soporta DMA-BUF.
+- [x] **Binario `.bin` en releases**: nuevo step en `release.yml` que copia `target/release/kolibri` → `kolibri-vX.Y.Z-linux-x86_64.bin` y lo sube al release. Para usuarios que prefieren binario crudo (requiere `libwebkit2gtk-4.1` en el sistema).
+
 ## Release 0.1.4 (2026-04-26) — fix login Google/Microsoft
 
 Bug introducido en `feat/ram-optimization` (0.1.3): al unificar todos los servicios en un solo `WebContext` compartido (sin `data_directory`) + patch FFI `UsesSingleWebProcess`/`SiteIsolation off` aplicado globalmente, Google/Microsoft detectaban entorno embebido y bloqueaban login redirigiendo a `workspace.google.com` "browser may not be secure". Outlook tampoco persistía cookies.
