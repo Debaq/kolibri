@@ -33,7 +33,21 @@ pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Alt+K";
 use engines::{MailEngine, MailHeader, MailMessage, OutgoingMessage};
 use services::ServiceEngine;
 
-fn build_engine(svc: &services::Service) -> std::result::Result<Box<dyn MailEngine>, String> {
+/// Construye el engine adecuado, refrescando access_token desde keyring
+/// si hace falta. Async porque el refresh hace HTTP.
+async fn engine_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    service_id: &str,
+) -> std::result::Result<Box<dyn MailEngine>, String> {
+    let svc = {
+        let state: tauri::State<AppState> = app.state();
+        let g = state.inner.lock().expect("AppState mutex poisoned");
+        g.services
+            .iter()
+            .find(|s| s.id == service_id)
+            .cloned()
+            .ok_or_else(|| format!("service {} not found", service_id))?
+    };
     match svc.engine {
         ServiceEngine::Webview => Err("service is webview, no mail engine".into()),
         ServiceEngine::Imap => {
@@ -41,7 +55,11 @@ fn build_engine(svc: &services::Service) -> std::result::Result<Box<dyn MailEngi
                 .imap
                 .clone()
                 .ok_or_else(|| "imap config missing".to_string())?;
-            Ok(Box::new(engines::imap::ImapEngine::new(cfg)))
+            if !cfg.authorized {
+                return Err("servicio sin autorizar (corré imap_oauth_authorize)".into());
+            }
+            let token = engines::imap::current_access_token(app, service_id).await?;
+            Ok(Box::new(engines::imap::ImapEngine::new(cfg, token)))
         }
         ServiceEngine::Graph => {
             let cfg = svc
@@ -53,24 +71,14 @@ fn build_engine(svc: &services::Service) -> std::result::Result<Box<dyn MailEngi
     }
 }
 
-fn engine_for(state: &AppState, service_id: &str) -> std::result::Result<Box<dyn MailEngine>, String> {
-    let g = state.inner.lock().expect("AppState mutex poisoned");
-    let svc = g
-        .services
-        .iter()
-        .find(|s| s.id == service_id)
-        .ok_or_else(|| format!("service {} not found", service_id))?;
-    build_engine(svc)
-}
-
 #[tauri::command]
-async fn mail_list_inbox(
-    state: tauri::State<'_, AppState>,
+async fn mail_list_inbox<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     offset: Option<u32>,
     limit: Option<u32>,
 ) -> std::result::Result<Vec<MailHeader>, String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine
         .list_inbox(offset.unwrap_or(0), limit.unwrap_or(50))
         .await
@@ -78,24 +86,24 @@ async fn mail_list_inbox(
 }
 
 #[tauri::command]
-async fn mail_get_message(
-    state: tauri::State<'_, AppState>,
+async fn mail_get_message<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     id: String,
 ) -> std::result::Result<MailMessage, String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine.get_message(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn mail_search(
-    state: tauri::State<'_, AppState>,
+async fn mail_search<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     query: String,
     offset: Option<u32>,
     limit: Option<u32>,
 ) -> std::result::Result<Vec<MailHeader>, String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine
         .search(&query, offset.unwrap_or(0), limit.unwrap_or(50))
         .await
@@ -103,43 +111,43 @@ async fn mail_search(
 }
 
 #[tauri::command]
-async fn mail_mark_read(
-    state: tauri::State<'_, AppState>,
+async fn mail_mark_read<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     id: String,
     read: bool,
 ) -> std::result::Result<(), String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine.mark_read(&id, read).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn mail_archive(
-    state: tauri::State<'_, AppState>,
+async fn mail_archive<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     id: String,
 ) -> std::result::Result<(), String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine.archive(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn mail_delete(
-    state: tauri::State<'_, AppState>,
+async fn mail_delete<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     id: String,
 ) -> std::result::Result<(), String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine.delete(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn mail_send(
-    state: tauri::State<'_, AppState>,
+async fn mail_send<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     service_id: String,
     msg: OutgoingMessage,
 ) -> std::result::Result<(), String> {
-    let engine = engine_for(&state, &service_id)?;
+    let engine = engine_for(&app, &service_id).await?;
     engine.send(&msg).await.map_err(|e| e.to_string())
 }
 
