@@ -750,4 +750,135 @@ mod tests {
         assert_eq!(host_of("https://outlook.live.com:443/mail"), "outlook.live.com");
         assert_eq!(host_of("https://web.whatsapp.com/?param=x"), "web.whatsapp.com");
     }
+
+    #[test]
+    fn host_of_invalid_url_returns_unknown() {
+        assert_eq!(host_of(""), "unknown");
+        assert_eq!(host_of("not a url"), "unknown");
+        assert_eq!(host_of("javascript:alert(1)"), "unknown");
+    }
+
+    #[test]
+    fn host_of_normalizes_uppercase() {
+        // Url crate normaliza host a minúsculas (per RFC 3986).
+        assert_eq!(host_of("https://Mail.Google.COM/"), "mail.google.com");
+    }
+
+    #[test]
+    fn sanitize_host_preserves_safe_chars() {
+        assert_eq!(sanitize_host("a-b_c.d.e"), "a-b_c.d.e");
+        assert_eq!(sanitize_host("ABC123"), "ABC123");
+    }
+
+    #[test]
+    fn sanitize_host_replaces_unicode_and_symbols() {
+        // 'é' es 1 char Unicode → 1 underscore.
+        assert_eq!(sanitize_host("café.com"), "caf_.com");
+        assert_eq!(sanitize_host("a b@c"), "a_b_c");
+    }
+
+    #[test]
+    fn allocate_slot_empty_existing() {
+        let v: Vec<Service> = vec![];
+        assert_eq!(allocate_slot(&v, "any.host"), 0);
+    }
+
+    #[test]
+    fn allocate_slot_fills_large_gaps() {
+        let v = vec![
+            svc("a", "https://x.com/", 0),
+            svc("b", "https://x.com/", 1),
+            svc("c", "https://x.com/", 5),
+        ];
+        // Slot libre más bajo es 2.
+        assert_eq!(allocate_slot(&v, "x.com"), 2);
+    }
+
+    #[test]
+    fn apply_reorder_empty_inputs() {
+        let out = apply_reorder(vec![], &[]);
+        assert!(out.is_empty());
+
+        let v = vec![svc("a", "https://a.com/", 0)];
+        let out = apply_reorder(v, &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "a");
+    }
+
+    #[test]
+    fn apply_reorder_duplicate_ids_taken_once() {
+        let v = vec![
+            svc("a", "https://a.com/", 0),
+            svc("b", "https://b.com/", 0),
+        ];
+        let ids = vec!["a".to_string(), "a".to_string(), "b".to_string()];
+        let out = apply_reorder(v, &ids);
+        assert_eq!(out.len(), 2);
+        let order: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(order, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn default_suspend_minutes_is_five() {
+        assert_eq!(default_suspend_minutes(), 5);
+    }
+
+    #[test]
+    fn isolated_session_case_insensitive_via_host_of() {
+        // host_of normaliza a minúsculas → match consistente.
+        let host = host_of("https://Mail.Google.com/");
+        assert!(needs_isolated_session(&host));
+    }
+
+    #[test]
+    fn persisted_state_serde_roundtrip() {
+        let original = PersistedState {
+            services: vec![Service {
+                id: "abc".into(),
+                name: "Test".into(),
+                url: "https://test.com".into(),
+                icon: Some("T".into()),
+                color: Some("#fff".into()),
+                user_agent: None,
+                session_slot: 2,
+                keep_alive: true,
+                isolated_session: true,
+            }],
+            active_id: Some("abc".into()),
+            toggle_shortcut: Some("Ctrl+Alt+K".into()),
+            inactive_suspend_minutes: 10,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: PersistedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.services.len(), 1);
+        assert_eq!(parsed.services[0].id, "abc");
+        assert_eq!(parsed.services[0].session_slot, 2);
+        assert!(parsed.services[0].keep_alive);
+        assert!(parsed.services[0].isolated_session);
+        assert_eq!(parsed.active_id.as_deref(), Some("abc"));
+        assert_eq!(parsed.inactive_suspend_minutes, 10);
+    }
+
+    #[test]
+    fn persisted_state_loads_old_config_without_new_fields() {
+        // Un config persistido en 0.1.3 (sin isolated_session) debe parsear OK
+        // y dejar el campo en false (default serde).
+        let old_json = r#"{
+            "services": [{
+                "id": "x",
+                "name": "X",
+                "url": "https://x.com",
+                "icon": null,
+                "color": null,
+                "user_agent": null,
+                "session_slot": 0,
+                "keep_alive": false
+            }],
+            "active_id": null
+        }"#;
+        let parsed: PersistedState = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.services.len(), 1);
+        assert!(!parsed.services[0].isolated_session);
+        assert_eq!(parsed.inactive_suspend_minutes, 5);
+    }
 }

@@ -206,4 +206,52 @@ mod tests {
         assert_eq!(host_from("https://web.whatsapp.com/x"), Some("web.whatsapp.com".to_string()));
         assert_eq!(host_from("not-a-url"), None);
     }
+
+    #[test]
+    fn detect_mime_empty_falls_back_to_ico() {
+        assert_eq!(detect_mime(&[]), "image/x-icon");
+    }
+
+    #[test]
+    fn detect_mime_unknown_bytes_falls_back_to_ico() {
+        assert_eq!(detect_mime(b"random garbage data"), "image/x-icon");
+    }
+
+    #[test]
+    fn looks_valid_rejects_xml_doctype() {
+        assert!(!looks_valid(b"<!DOCTYPE html><html>error</html>"));
+    }
+
+    #[test]
+    fn looks_valid_accepts_minimum_png_header() {
+        // PNG signature (8 bytes) + 8 bytes de padding → 16 bytes (umbral mínimo).
+        let bytes = b"\x89PNG\r\n\x1a\nABCDEFGH";
+        assert!(looks_valid(bytes));
+    }
+
+    #[test]
+    fn safe_name_handles_empty_and_long() {
+        assert_eq!(safe_name(""), "");
+        let long = "a".repeat(300);
+        assert_eq!(safe_name(&long).len(), 300);
+    }
+
+    #[test]
+    fn safe_name_unicode_to_underscore() {
+        assert_eq!(safe_name("xn--caf-dma.com"), "xn--caf-dma.com");
+        // 'é' es 1 char Unicode → 1 underscore.
+        assert_eq!(safe_name("café.com"), "caf_.com");
+    }
+
+    #[test]
+    fn host_from_handles_ports_and_subpaths() {
+        assert_eq!(host_from("https://example.com:8080/path?x=1"), Some("example.com".to_string()));
+        assert_eq!(host_from("http://localhost/"), Some("localhost".to_string()));
+    }
+
+    #[test]
+    fn host_from_rejects_javascript_scheme() {
+        // javascript: URLs no tienen host.
+        assert_eq!(host_from("javascript:void(0)"), None);
+    }
 }
