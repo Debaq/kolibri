@@ -29,6 +29,10 @@
   let composeReplyTo = $state<string | null>(null); // message_id RFC822
   let sending = $state(false);
 
+  // Search
+  let searchQuery = $state("");
+  let searchActive = $state(false); // true cuando los headers son resultado de search
+
   let lastServiceId = "";
   let unlistens: UnlistenFn[] = [];
 
@@ -65,6 +69,8 @@
   }
 
   async function loadInbox() {
+    searchActive = false;
+    searchQuery = "";
     loadingList = true;
     error = null;
     try {
@@ -73,6 +79,33 @@
       error = String(e);
     } finally {
       loadingList = false;
+    }
+  }
+
+  async function runSearch(e?: Event) {
+    e?.preventDefault();
+    const q = searchQuery.trim();
+    if (!q) {
+      await loadInbox();
+      return;
+    }
+    loadingList = true;
+    error = null;
+    try {
+      headers = await mailApi.search(serviceId, q, 0, 100);
+      searchActive = true;
+      selected = null;
+      selectedId = null;
+    } catch (e: any) {
+      error = String(e);
+    } finally {
+      loadingList = false;
+    }
+  }
+
+  function clearSearch() {
+    if (searchActive || searchQuery) {
+      loadInbox();
     }
   }
 
@@ -211,7 +244,20 @@
 <div class="mail">
   <header class="mail-head">
     <button onclick={loadInbox} disabled={loadingList || busy} title="Recargar">↻</button>
-    <span class="count">{headers.length} mensajes</span>
+    <form class="search" onsubmit={runSearch}>
+      <input
+        type="search"
+        placeholder="Buscar (Gmail: from:foo has:attachment | Outlook: KQL)"
+        bind:value={searchQuery}
+        disabled={loadingList}
+      />
+      {#if searchActive}
+        <button type="button" onclick={clearSearch} title="Limpiar búsqueda">×</button>
+      {/if}
+    </form>
+    <span class="count">
+      {#if searchActive}{headers.length} resultados{:else}{headers.length} mensajes{/if}
+    </span>
     {#if error}<span class="err" title={error}>{error}</span>{/if}
   </header>
 
@@ -335,6 +381,38 @@
   .mail-head button:hover { background: #353535; }
   .mail-head button:disabled { opacity: 0.5; cursor: wait; }
   .count { color: #888; font-size: 12px; }
+
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    max-width: 480px;
+  }
+  .search input {
+    flex: 1;
+    background: #1d1d1d;
+    border: 1px solid #2f2f2f;
+    border-radius: 4px;
+    padding: 5px 10px;
+    color: #e0e0e0;
+    font-size: 12px;
+    outline: none;
+    height: 26px;
+  }
+  .search input:focus { border-color: #4a8; }
+  .search button {
+    height: 26px;
+    width: 26px;
+    padding: 0;
+    background: #2a2a2a;
+    color: #e0e0e0;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .search button:hover { background: #353535; }
   .err {
     color: #ff6b6b;
     font-size: 12px;

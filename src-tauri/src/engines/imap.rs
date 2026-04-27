@@ -288,8 +288,73 @@ impl MailEngine for ImapEngine {
         })
     }
 
-    async fn search(&self, _query: &str, _offset: u32, _limit: u32) -> Result<Vec<MailHeader>> {
-        Err(MailError::Other("imap.search not implemented (step 8)".into()))
+    /// Búsqueda con sintaxis Gmail (X-GM-RAW): `from:foo has:attachment`,
+    /// `subject:reunión`, `after:2026/01/01`, etc. Busca en All Mail.
+    async fn search(&self, query: &str, offset: u32, limit: u32) -> Result<Vec<MailHeader>> {
+        if query.trim().is_empty() {
+            return Ok(vec![]);
+        }
+        let mut session = login(&self.config.email, &self.access_token).await?;
+        session
+            .select("[Gmail]/All Mail")
+            .await
+            .map_err(|e| MailError::Network(format!("select All Mail: {}", e)))?;
+
+        // Escapar comillas en el query.
+        let escaped = query.replace('\\', "\\\\").replace('"', "\\\"");
+        let cmd = format!("X-GM-RAW \"{}\"", escaped);
+        let uids: Vec<u32> = session
+            .uid_search(&cmd)
+            .await
+            .map_err(|e| MailError::Network(format!("search: {}", e)))?
+            .into_iter()
+            .collect();
+
+        if uids.is_empty() {
+            let _ = session.logout().await;
+            return Ok(vec![]);
+        }
+
+        // X-GM-RAW devuelve UIDs sin orden garantizado. Ordenamos ascendente
+        // (UID asignado por mailbox order ≈ recencia) y tomamos ventana desde
+        // el final.
+        let mut sorted = uids;
+        sorted.sort();
+        let total = sorted.len();
+        let limit = limit.clamp(1, 500) as usize;
+        let offset = offset as usize;
+        if offset >= total {
+            let _ = session.logout().await;
+            return Ok(vec![]);
+        }
+        let top_idx = total - offset;
+        let bottom_idx = top_idx.saturating_sub(limit);
+        let slice = &sorted[bottom_idx..top_idx];
+        let uid_set: String = slice
+            .iter()
+            .map(|u| u.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut headers: Vec<MailHeader> = Vec::with_capacity(slice.len());
+        {
+            let mut stream = session
+                .uid_fetch(
+                    uid_set,
+                    "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])",
+                )
+                .await
+                .map_err(|e| MailError::Network(format!("uid_fetch: {}", e)))?;
+            while let Some(item) = stream.next().await {
+                let msg = item.map_err(|e| MailError::Network(e.to_string()))?;
+                if let Some(h) = parse_envelope_header(&msg) {
+                    headers.push(h);
+                }
+            }
+        }
+        let _ = session.logout().await;
+        headers.sort_by(|a, b| b.date_ts.cmp(&a.date_ts));
+        Ok(headers)
     }
 
     async fn mark_read(&self, id: &MessageId, read: bool) -> Result<()> {

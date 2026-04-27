@@ -297,8 +297,43 @@ impl MailEngine for GraphEngine {
         Ok(full_to_message(full))
     }
 
-    async fn search(&self, _query: &str, _offset: u32, _limit: u32) -> Result<Vec<MailHeader>> {
-        Err(MailError::Other("graph.search not implemented (step 8)".into()))
+    /// Búsqueda con KQL (Microsoft) o términos libres. p.ej.
+    /// `from:foo@bar.com hasAttachment:true`. Graph $search NO soporta
+    /// $orderby ni $skip — resultado ranked por relevancia. MVP: ignorar
+    /// offset, devolver primer batch de $top.
+    async fn search(&self, query: &str, _offset: u32, limit: u32) -> Result<Vec<MailHeader>> {
+        if query.trim().is_empty() {
+            return Ok(vec![]);
+        }
+        let limit = limit.clamp(1, 250);
+        let url = format!("{}/me/messages", API_BASE);
+        let resp = Self::http()
+            .get(&url)
+            .bearer_auth(&self.access_token)
+            // ConsistencyLevel=eventual es requerido por Graph $search.
+            .header("ConsistencyLevel", "eventual")
+            .query(&[
+                ("$search", format!("\"{}\"", query)),
+                ("$top", limit.to_string()),
+                (
+                    "$select",
+                    "id,subject,from,receivedDateTime,isRead,flag,bodyPreview,hasAttachments,conversationId"
+                        .to_string(),
+                ),
+            ])
+            .send()
+            .await
+            .map_err(|e| MailError::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(MailError::Network(format!("graph search {}: {}", s, body)));
+        }
+        let list: GraphList<GraphMessageSummary> = resp
+            .json()
+            .await
+            .map_err(|e| MailError::Parse(format!("graph search json: {}", e)))?;
+        Ok(list.value.into_iter().map(summary_to_header).collect())
     }
 
     async fn mark_read(&self, id: &MessageId, read: bool) -> Result<()> {
