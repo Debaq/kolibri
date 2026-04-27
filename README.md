@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="logo.png" alt="Kolibri" width="180" />
+  <img src="static/logo.webp" alt="Kolibri" width="180" />
 </p>
 
 <h1 align="center">Kolibri</h1>
 
 <p align="center">
-  Cliente liviano multi-servicio (WhatsApp Web, Gmail, Outlook, etc.) construido con Tauri + Rust + Svelte.
+  Cliente multi-servicio (WhatsApp Web, Gmail, Outlook, etc.) con Tauri + Rust + Svelte.
 </p>
 
 <p align="center">
@@ -14,7 +14,9 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
 </p>
 
-Alternativa minimalista a Rambox/Franz/Ferdium. Una sola WebView del SO en lugar de un Chromium por servicio = menos RAM, menos CPU, arranque rápido.
+Agrupa varios servicios web (WhatsApp, Gmail, Outlook, etc.) en una sola app, usando el WebView del sistema (WebKitGTK / WebView2). Un webview por servicio, sesiones aisladas, tray + atajo global.
+
+> **Nota honesta:** no es especialmente liviano. Cada servicio activo abre su propio WebView con su propio proceso. El consumo de RAM es comparable al de un navegador con esas mismas pestañas abiertas. El valor está en agruparlos bajo una sola ventana, no en optimización de recursos.
 
 ## Features
 
@@ -22,19 +24,15 @@ Alternativa minimalista a Rambox/Franz/Ferdium. Una sola WebView del SO en lugar
 - Cookies/sesión aisladas por servicio (logins independientes)
 - Tray icon, atajo global `Ctrl+Alt+K` show/hide
 - Notificaciones nativas + badge de no-leídos via parseo de `document.title`
-- Single window borderless (KDE Wayland tested)
+- Auto-suspend de pestañas inactivas (configurable) + toggle "mantener viva"
 - Settings: tema, rename, cambio de URL, color, reorder, atajos
 
 ## Stack
 
-- **Tauri 2** — shell nativo (~600 KB)
+- **Tauri 2** — shell nativo
 - **Rust** — sesiones, tray, notificaciones, hotkeys, persistencia
 - **Svelte 5 + TypeScript** — UI bar
 - **WebView del SO** — WebKitGTK (Linux), WebView2 (Windows)
-
-## Objetivo RAM
-
-3 servicios activos: ~200–400 MB (vs Rambox/Electron ~1 GB+).
 
 ## Instalación
 

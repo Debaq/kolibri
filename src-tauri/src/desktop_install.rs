@@ -13,7 +13,7 @@ use std::path::PathBuf;
 const APP_ID: &str = "kolibri";
 const APP_NAME: &str = "Kolibri";
 const APP_GENERIC: &str = "Multi-service messenger";
-const APP_COMMENT: &str = "Cliente liviano multi-servicio (WhatsApp, Gmail, Outlook)";
+const APP_COMMENT: &str = "Cliente multi-servicio (WhatsApp, Gmail, Outlook)";
 const APP_CATEGORIES: &str = "Network;InstantMessaging;Email;";
 
 const ICON_32: &[u8] = include_bytes!("../icons/32x32.png");
