@@ -11,6 +11,7 @@
 pub mod graph;
 pub mod imap;
 pub mod oauth;
+pub mod watcher;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

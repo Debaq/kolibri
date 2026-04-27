@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     mailApi,
     formatDate,
@@ -29,6 +30,7 @@
   let sending = $state(false);
 
   let lastServiceId = "";
+  let unlistens: UnlistenFn[] = [];
 
   $effect(() => {
     if (serviceId !== lastServiceId) {
@@ -36,6 +38,22 @@
       reset();
       loadInbox();
     }
+  });
+
+  onMount(async () => {
+    unlistens.push(
+      await listen<{ service_id: string; header: MailHeader }>(
+        "kolibri:mail:new",
+        (e) => {
+          if (e.payload.service_id !== serviceId) return;
+          // Insertar al tope si no existe ya.
+          const exists = headers.some((h) => h.id === e.payload.header.id);
+          if (!exists) {
+            headers = [e.payload.header, ...headers];
+          }
+        },
+      ),
+    );
   });
 
   function reset() {
@@ -179,7 +197,11 @@
     }
   }
 
-  onDestroy(reset);
+  onDestroy(() => {
+    reset();
+    for (const u of unlistens) u();
+    unlistens = [];
+  });
 
   let currentSeen = $derived(
     selectedId ? headers.find((h) => h.id === selectedId)?.seen ?? true : true,

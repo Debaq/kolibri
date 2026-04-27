@@ -105,7 +105,7 @@ struct GraphBody {
 }
 
 #[derive(Deserialize)]
-struct GraphMessageSummary {
+pub struct GraphMessageSummary {
     id: String,
     #[serde(default)]
     subject: Option<String>,
@@ -146,6 +146,12 @@ struct GraphMessageFull {
     has_attachments: Option<bool>,
     #[serde(rename = "conversationId", default)]
     conversation_id: Option<String>,
+}
+
+/// Re-export público para watcher.rs (que parsea respuestas de polling).
+pub type GraphMessageSummaryPub = GraphMessageSummary;
+pub fn summary_to_header_pub(m: GraphMessageSummary) -> MailHeader {
+    summary_to_header(m)
 }
 
 fn summary_to_header(m: GraphMessageSummary) -> MailHeader {
@@ -447,6 +453,8 @@ pub async fn graph_oauth_authorize<R: Runtime>(
     }
     let _ = app.emit("kolibri:services_changed", ());
 
+    super::watcher::start(&app, &service_id);
+
     Ok(AuthorizeResult {
         email: result.email,
         scope: result.tokens.scope,
@@ -459,6 +467,7 @@ pub async fn graph_oauth_revoke<R: Runtime>(
     app: AppHandle<R>,
     service_id: String,
 ) -> std::result::Result<(), String> {
+    super::watcher::stop(&app, &service_id);
     let _ = oauth::keyring_delete(KEYRING_KIND, &service_id);
     let state: State<AppState> = app.state();
     let mut g = state.inner.lock().expect("AppState mutex poisoned");

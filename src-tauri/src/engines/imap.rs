@@ -56,6 +56,59 @@ impl async_imap::Authenticator for XOAuth2 {
     }
 }
 
+/// Login expuesto para el watcher (no Result interno tipado).
+pub async fn login_for_watcher(
+    email: &str,
+    access_token: &str,
+) -> std::result::Result<ImapSession, String> {
+    login(email, access_token).await.map_err(|e| e.to_string())
+}
+
+/// Para watcher: dado un sequence number (no UID), devuelve el UID.
+pub async fn fetch_uid_at(
+    session: &mut ImapSession,
+    seq: u32,
+) -> std::result::Result<Option<u32>, String> {
+    let mut stream = session
+        .fetch(seq.to_string(), "(UID)")
+        .await
+        .map_err(|e| format!("fetch uid: {}", e))?;
+    let mut found = None;
+    while let Some(item) = stream.next().await {
+        let msg = item.map_err(|e| e.to_string())?;
+        if let Some(uid) = msg.uid {
+            found = Some(uid);
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// Para watcher: trae headers para rango de UIDs (descendente por fecha).
+pub async fn fetch_headers_for_uids(
+    session: &mut ImapSession,
+    from_uid: u32,
+    to_uid: u32,
+) -> std::result::Result<Vec<MailHeader>, String> {
+    let range = format!("{}:{}", from_uid, to_uid);
+    let mut headers: Vec<MailHeader> = Vec::new();
+    let mut stream = session
+        .uid_fetch(
+            range,
+            "(UID FLAGS BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])",
+        )
+        .await
+        .map_err(|e| format!("uid_fetch: {}", e))?;
+    while let Some(item) = stream.next().await {
+        let msg = item.map_err(|e| e.to_string())?;
+        if let Some(h) = parse_envelope_header(&msg) {
+            headers.push(h);
+        }
+    }
+    headers.sort_by(|a, b| b.date_ts.cmp(&a.date_ts));
+    Ok(headers)
+}
+
 async fn login(email: &str, access_token: &str) -> Result<ImapSession> {
     let tcp = TcpStream::connect((IMAP_HOST, IMAP_PORT))
         .await
@@ -427,6 +480,9 @@ pub async fn imap_oauth_authorize<R: Runtime>(
     }
     let _ = app.emit("kolibri:services_changed", ());
 
+    // Arrancar watcher IDLE en background.
+    super::watcher::start(&app, &service_id);
+
     Ok(AuthorizeResult {
         email: result.email,
         scope: result.tokens.scope,
@@ -441,6 +497,7 @@ pub async fn imap_oauth_revoke<R: Runtime>(
     app: AppHandle<R>,
     service_id: String,
 ) -> std::result::Result<(), String> {
+    super::watcher::stop(&app, &service_id);
     let _ = oauth::keyring_delete(KEYRING_KIND, &service_id);
     let state: State<AppState> = app.state();
     let mut g = state.inner.lock().expect("AppState mutex poisoned");

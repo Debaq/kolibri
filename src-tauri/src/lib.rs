@@ -293,6 +293,7 @@ pub fn run() {
         .manage(MountedRegistry::default())
         .manage(UnreadState::default())
         .manage(sysmem::SysState::default())
+        .manage(engines::watcher::WatcherRegistry::default())
         .invoke_handler(tauri::generate_handler![
             services::list_services,
             services::add_service,
@@ -359,6 +360,9 @@ pub fn run() {
 
             webview::setup_main_window(app.handle())?;
             services::load_from_disk(app.handle())?;
+
+            // Watchers de servicios mail nativos (IDLE Gmail + polling Graph).
+            engines::watcher::start_all_authorized(app.handle());
 
             let accel = app
                 .state::<AppState>()

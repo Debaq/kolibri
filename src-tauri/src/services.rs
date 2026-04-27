@@ -614,6 +614,7 @@ pub fn remove_service<R: Runtime>(
         }
         save(&app, &g).map_err(|e| e.to_string())?;
     }
+    crate::engines::watcher::stop(&app, &id);
     webview::unmount(&app, &id).map_err(|e| e.to_string())?;
     if was_active {
         webview::set_active(&app, None).map_err(|e| e.to_string())?;
