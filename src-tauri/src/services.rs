@@ -9,6 +9,69 @@ use url::Url;
 
 use crate::webview;
 
+/// Engine que renderiza el servicio.
+/// - `Webview` (default): WebView del SO. Modelo histórico (WhatsApp queda acá siempre).
+/// - `Imap`: cliente IMAP+SMTP nativo con XOAUTH2. Para Gmail.
+/// - `Graph`: REST Microsoft Graph con OAuth2. Para Outlook empresarial (M365).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceEngine {
+    Webview,
+    Imap,
+    Graph,
+}
+
+impl Default for ServiceEngine {
+    fn default() -> Self {
+        ServiceEngine::Webview
+    }
+}
+
+/// Tokens OAuth2 persistidos. `expires_at` en UNIX seconds.
+/// El refresh_token se guarda en keyring (no en services.json). Acá solo va
+/// el handle/key (`refresh_token_ref`) para recuperarlo.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OAuthTokens {
+    #[serde(default)]
+    pub access_token: String,
+    #[serde(default)]
+    pub expires_at: i64,
+    #[serde(default)]
+    pub scope: String,
+    /// Identificador para buscar el refresh_token en keyring del SO.
+    /// Formato: "kolibri:imap:{service_id}" o "kolibri:graph:{service_id}".
+    #[serde(default)]
+    pub refresh_token_ref: String,
+}
+
+/// Config para engine IMAP (Gmail). Hosts hardcoded a Gmail en MVP.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImapConfig {
+    pub email: String,
+    /// Client ID OAuth registrado por el user en su Google Cloud Console.
+    pub client_id: String,
+    pub client_secret: String,
+    #[serde(default)]
+    pub tokens: OAuthTokens,
+}
+
+/// Config para engine Graph (Outlook M365).
+/// Default `client_id` = Microsoft Graph PowerShell (pre-aprobado, sin Azure setup).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphConfig {
+    pub email: String,
+    pub client_id: String,
+    /// Tenant: "common" para multi-tenant, GUID específico para empresarial fijo.
+    #[serde(default = "graph_default_tenant")]
+    pub tenant: String,
+    #[serde(default)]
+    pub tokens: OAuthTokens,
+}
+
+fn graph_default_tenant() -> String {
+    "common".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Service {
     pub id: String,
@@ -32,6 +95,12 @@ pub struct Service {
     /// detectan WebContext compartido. Trade-off: +1 WebProcess en RAM.
     #[serde(default)]
     pub isolated_session: bool,
+    #[serde(default)]
+    pub engine: ServiceEngine,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imap: Option<ImapConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<GraphConfig>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -272,6 +341,9 @@ pub fn add_service<R: Runtime>(
         session_slot: slot,
         keep_alive: false,
         isolated_session: isolated,
+        engine: ServiceEngine::default(),
+        imap: None,
+        graph: None,
     };
     {
         let mut g = state.inner.lock().expect("AppState mutex poisoned");

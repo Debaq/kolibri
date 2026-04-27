@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 mod desktop_install;
+mod engines;
 mod favicons;
 mod ram_log;
 mod services;
@@ -23,6 +24,124 @@ pub struct UnreadState {
 }
 
 pub const DEFAULT_TOGGLE_SHORTCUT: &str = "Ctrl+Alt+K";
+
+// ──────────── Mail dispatcher ────────────
+//
+// Comandos Tauri unificados que dispatchan al engine correcto según
+// `Service.engine`. UI Svelte llama solo estos; no conoce IMAP vs Graph.
+
+use engines::{MailEngine, MailHeader, MailMessage, OutgoingMessage};
+use services::ServiceEngine;
+
+fn build_engine(svc: &services::Service) -> std::result::Result<Box<dyn MailEngine>, String> {
+    match svc.engine {
+        ServiceEngine::Webview => Err("service is webview, no mail engine".into()),
+        ServiceEngine::Imap => {
+            let cfg = svc
+                .imap
+                .clone()
+                .ok_or_else(|| "imap config missing".to_string())?;
+            Ok(Box::new(engines::imap::ImapEngine::new(cfg)))
+        }
+        ServiceEngine::Graph => {
+            let cfg = svc
+                .graph
+                .clone()
+                .ok_or_else(|| "graph config missing".to_string())?;
+            Ok(Box::new(engines::graph::GraphEngine::new(cfg)))
+        }
+    }
+}
+
+fn engine_for(state: &AppState, service_id: &str) -> std::result::Result<Box<dyn MailEngine>, String> {
+    let g = state.inner.lock().expect("AppState mutex poisoned");
+    let svc = g
+        .services
+        .iter()
+        .find(|s| s.id == service_id)
+        .ok_or_else(|| format!("service {} not found", service_id))?;
+    build_engine(svc)
+}
+
+#[tauri::command]
+async fn mail_list_inbox(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> std::result::Result<Vec<MailHeader>, String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine
+        .list_inbox(offset.unwrap_or(0), limit.unwrap_or(50))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mail_get_message(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    id: String,
+) -> std::result::Result<MailMessage, String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine.get_message(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mail_search(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    query: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> std::result::Result<Vec<MailHeader>, String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine
+        .search(&query, offset.unwrap_or(0), limit.unwrap_or(50))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mail_mark_read(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    id: String,
+    read: bool,
+) -> std::result::Result<(), String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine.mark_read(&id, read).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mail_archive(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    id: String,
+) -> std::result::Result<(), String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine.archive(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mail_delete(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    id: String,
+) -> std::result::Result<(), String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine.delete(&id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn mail_send(
+    state: tauri::State<'_, AppState>,
+    service_id: String,
+    msg: OutgoingMessage,
+) -> std::result::Result<(), String> {
+    let engine = engine_for(&state, &service_id)?;
+    engine.send(&msg).await.map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 fn get_toggle_shortcut(state: tauri::State<'_, AppState>) -> String {
@@ -189,6 +308,13 @@ pub fn run() {
             favicons::clear_favicon_cache,
             sysmem::get_memory_usage,
             update::check_update,
+            mail_list_inbox,
+            mail_get_message,
+            mail_mark_read,
+            mail_archive,
+            mail_delete,
+            mail_send,
+            mail_search,
         ])
         .setup(|app| {
             #[cfg(target_os = "linux")]
