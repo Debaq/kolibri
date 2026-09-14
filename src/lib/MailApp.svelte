@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { openUrl } from "@tauri-apps/plugin-opener";
   import {
     mailApi,
     formatDate,
@@ -236,6 +237,25 @@
     unlistens = [];
   });
 
+  function onBodyIframeLoad(e: Event) {
+    const iframe = e.currentTarget as HTMLIFrameElement;
+    const doc = iframe.contentDocument;
+    if (!doc) return;
+    doc.addEventListener("click", (ev) => {
+      let el = ev.target as HTMLElement | null;
+      while (el && el.tagName !== "A") el = el.parentElement;
+      if (!el) return;
+      const a = el as HTMLAnchorElement;
+      const href = a.getAttribute("href");
+      if (!href) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (/^(https?|mailto|tel):/i.test(href)) {
+        openUrl(href).catch(() => {});
+      }
+    }, true);
+  }
+
   let currentSeen = $derived(
     selectedId ? headers.find((h) => h.id === selectedId)?.seen ?? true : true,
   );
@@ -336,6 +356,7 @@
               title="msg-body"
               srcdoc={selected.body_html}
               sandbox="allow-same-origin"
+              onload={onBodyIframeLoad}
             ></iframe>
           {:else}
             <pre>{selected.body_text}</pre>

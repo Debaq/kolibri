@@ -192,6 +192,22 @@ pub fn mount_child<R: Runtime>(app: &AppHandle<R>, svc: &Service) -> tauri::Resu
                 true
             });
 
+            // window.open / target=_blank → abrir en navegador del sistema.
+            // Sin este handler webkit2gtk crea ventana nueva en wry o, si
+            // no se conecta nada, no pasa nada — links muertos en WhatsApp/etc.
+            view.connect_create(|_w, action| {
+                use webkit2gtk::URIRequestExt;
+                if let Some(req) = action.request() {
+                    if let Some(uri) = req.uri() {
+                        let url = uri.to_string();
+                        if url.starts_with("http://") || url.starts_with("https://") {
+                            let _ = tauri_plugin_opener::open_url::<String, &str>(url, None);
+                        }
+                    }
+                }
+                None
+            });
+
             // Bridge de drag-and-drop GTK → JS. WebKitGTK no genera File objects
             // en `dataTransfer.files` para drops externos en algunos sitios
             // (WhatsApp, Slack), asi que interceptamos el drop a nivel GTK,
